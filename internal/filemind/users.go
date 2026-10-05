@@ -45,13 +45,7 @@ func validUsername(username string) bool {
 }
 
 func (a *App) adminAPI(next http.HandlerFunc) http.HandlerFunc {
-	return a.ownerAPI(func(w http.ResponseWriter, r *http.Request) {
-		if !userFromContext(r.Context()).IsAdmin {
-			apiError(w, 403, "Administrator access required.")
-			return
-		}
-		next(w, r)
-	})
+	return a.accountAPI("admin", next)
 }
 
 func (a *App) transferAPI(next http.HandlerFunc) http.HandlerFunc {

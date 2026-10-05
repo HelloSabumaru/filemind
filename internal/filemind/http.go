@@ -19,13 +19,11 @@ func (a *App) OwnerHandler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /healthz", a.health)
 	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/upload", http.StatusSeeOther) })
-	m.HandleFunc("GET /login", a.loginPage)
-	m.HandleFunc("POST /login", a.login)
-	m.HandleFunc("GET /upload", a.ownerPage("upload"))
-	m.HandleFunc("GET /transfers", a.ownerPage("transfers"))
-	m.HandleFunc("GET /admin/users", a.ownerPage("users"))
-	m.HandleFunc("GET /admin/settings", a.ownerPage("settings"))
-	m.HandleFunc("POST /logout", a.ownerAPI(a.logout))
+	m.HandleFunc("GET /login", a.loginPage("owner"))
+	m.HandleFunc("POST /login", a.login("owner"))
+	m.HandleFunc("GET /upload", a.accountPage("upload", "owner"))
+	m.HandleFunc("GET /transfers", a.accountPage("transfers", "owner"))
+	m.HandleFunc("POST /logout", a.ownerAPI(a.logout("owner")))
 	m.HandleFunc("GET /api/config", a.ownerAPI(a.configuration))
 	m.HandleFunc("GET /api/transfers", a.ownerAPI(a.listTransfers))
 	m.HandleFunc("POST /api/transfers", a.ownerAPI(a.createTransfer))
@@ -35,16 +33,29 @@ func (a *App) OwnerHandler() http.Handler {
 	m.HandleFunc("POST /api/transfers/{id}/publish", a.transferAPI(a.publish))
 	m.HandleFunc("POST /api/transfers/{id}/revoke", a.transferAPI(a.revokeTransfer))
 	m.HandleFunc("GET /api/transfers/{id}/qr.png", a.transferAPI(a.qr))
+	for _, pattern := range []string{"OPTIONS /uploads/{$}", "POST /uploads/{$}", "HEAD /uploads/{id}", "PATCH /uploads/{id}"} {
+		m.HandleFunc(pattern, a.ownerAPI(a.upload))
+	}
+	m.HandleFunc("GET /assets/{name}", a.asset)
+	return a.middleware(m, "owner")
+}
+
+func (a *App) AdminHandler() http.Handler {
+	m := http.NewServeMux()
+	m.HandleFunc("GET /healthz", a.health)
+	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/users", http.StatusSeeOther) })
+	m.HandleFunc("GET /login", a.loginPage("admin"))
+	m.HandleFunc("POST /login", a.login("admin"))
+	m.HandleFunc("POST /logout", a.adminAPI(a.logout("admin")))
+	m.HandleFunc("GET /admin/users", a.accountPage("users", "admin"))
+	m.HandleFunc("GET /admin/settings", a.accountPage("settings", "admin"))
 	m.HandleFunc("GET /admin/api/users", a.adminAPI(a.listUsers))
 	m.HandleFunc("POST /admin/api/users", a.adminAPI(a.createUser))
 	m.HandleFunc("PATCH /admin/api/users/{id}", a.adminAPI(a.editUser))
 	m.HandleFunc("GET /admin/api/settings", a.adminAPI(a.getSettings))
 	m.HandleFunc("PUT /admin/api/settings", a.adminAPI(a.saveSettings))
-	for _, pattern := range []string{"OPTIONS /uploads/{$}", "POST /uploads/{$}", "HEAD /uploads/{id}", "PATCH /uploads/{id}"} {
-		m.HandleFunc(pattern, a.ownerAPI(a.upload))
-	}
 	m.HandleFunc("GET /assets/{name}", a.asset)
-	return a.middleware(m, false)
+	return a.middleware(m, "admin")
 }
 
 func (a *App) PublicHandler() http.Handler {
@@ -60,7 +71,7 @@ func (a *App) PublicHandler() http.Handler {
 	m.HandleFunc("GET /s/{token}/archive", a.archive)
 	m.HandleFunc("GET /assets/{name}", a.asset)
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { notFound(w) })
-	return a.middleware(m, true)
+	return a.middleware(m, "public")
 }
 
 type responseLog struct {
@@ -85,7 +96,7 @@ func (w *responseLog) Write(p []byte) (int, error) {
 }
 func (w *responseLog) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-func (a *App) middleware(next http.Handler, public bool) http.Handler {
+func (a *App) middleware(next http.Handler, surface string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		out := &responseLog{ResponseWriter: w}
@@ -98,7 +109,7 @@ func (a *App) middleware(next http.Handler, public bool) http.Handler {
 			if route == "" {
 				route = "unknown"
 			}
-			a.logger.Info("request", "surface", map[bool]string{true: "public", false: "owner"}[public], "route", route, "method", r.Method, "status", out.status, "bytes", out.bytes, "duration_ms", time.Since(start).Milliseconds())
+			a.logger.Info("request", "surface", surface, "route", route, "method", r.Method, "status", out.status, "bytes", out.bytes, "duration_ms", time.Since(start).Milliseconds())
 		}()
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -107,17 +118,19 @@ func (a *App) middleware(next http.Handler, public bool) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		if r.URL.Path != "/healthz" {
 			limit := a.limiter
-			if !public {
+			if surface == "owner" {
 				limit = a.ownerLimiter
+			} else if surface == "admin" {
+				limit = a.adminLimiter
 			}
-			if allowed, retry := limit.allow(a.clientIP(r), public); !allowed {
+			if allowed, retry := limit.allow(a.clientIP(r), surface == "public"); !allowed {
 				w.Header().Set("Retry-After", strconv.Itoa(retry))
 				apiError(w, 429, "Too many requests or incorrect passwords. Try again later.")
 				return
 			}
 		}
 		limit := int64(64 * 1024)
-		if !public && r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/uploads/") {
+		if surface == "owner" && r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/uploads/") {
 			limit = 8 * 1024 * 1024
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
@@ -126,13 +139,25 @@ func (a *App) middleware(next http.Handler, public bool) http.Handler {
 }
 
 func (a *App) ownerAPI(next http.HandlerFunc) http.HandlerFunc {
+	return a.accountAPI("owner", next)
+}
+
+func (a *App) accountOptions(kind string) (origin, scope, home string) {
+	if kind == "admin" {
+		return a.cfg.AdminURL, "admin-account", "/admin/users"
+	}
+	return a.cfg.OwnerURL, "account", "/upload"
+}
+
+func (a *App) accountAPI(kind string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, err := a.authenticatedUser(r)
+		user, err := a.authenticatedAccount(r, kind)
 		if err != nil {
 			apiError(w, 401, "Sign in to continue.")
 			return
 		}
-		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" && !a.checkCSRF(r, "account", a.cfg.OwnerURL) {
+		origin, scope, _ := a.accountOptions(kind)
+		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" && !a.checkCSRF(r, scope, origin) {
 			apiError(w, 403, "Request verification failed. Refresh and retry.")
 			return
 		}
@@ -153,78 +178,88 @@ type pageData struct {
 	Locked            bool
 	Config            Config
 	User              User
+	AdminSurface      bool
 }
 
-func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
-	if _, err := a.authenticatedUser(r); err == nil {
-		http.Redirect(w, r, "/upload", 303)
-		return
-	}
-	a.render(w, "owner", pageData{Page: "login", CSRF: a.csrfToken(w, r, "account", "/")})
-}
-func (a *App) ownerPage(page string) http.HandlerFunc {
+func (a *App) loginPage(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, err := a.authenticatedUser(r)
+		_, scope, home := a.accountOptions(kind)
+		if _, err := a.authenticatedAccount(r, kind); err == nil {
+			http.Redirect(w, r, home, 303)
+			return
+		}
+		a.render(w, "owner", pageData{Page: "login", CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, AdminSurface: kind == "admin"})
+	}
+}
+func (a *App) accountPage(page, kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, err := a.authenticatedAccount(r, kind)
 		if err != nil {
 			http.Redirect(w, r, "/login", 303)
 			return
 		}
-		if (page == "users" || page == "settings") && !user.IsAdmin {
-			apiError(w, 403, "Administrator access required.")
-			return
-		}
-		a.render(w, "owner", pageData{Page: page, CSRF: a.csrfToken(w, r, "account", "/"), Config: a.cfg, User: user})
+		_, scope, _ := a.accountOptions(kind)
+		a.render(w, "owner", pageData{Page: page, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin"})
 	}
 }
 
-func (a *App) login(w http.ResponseWriter, r *http.Request) {
-	if !a.checkCSRF(r, "account", a.cfg.OwnerURL) {
-		apiError(w, 403, "Refresh the sign-in page and retry.")
-		return
+func (a *App) login(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin, scope, _ := a.accountOptions(kind)
+		if !a.checkCSRF(r, scope, origin) {
+			apiError(w, 403, "Refresh the sign-in page and retry.")
+			return
+		}
+		var input struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if !decode(w, r, &input) {
+			return
+		}
+		select {
+		case a.hashSlots <- struct{}{}:
+			defer func() { <-a.hashSlots }()
+		default:
+			apiError(w, 429, "Password verification busy. Try again shortly.")
+			return
+		}
+		user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u WHERE u.username=?", strings.TrimSpace(input.Username)))
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			apiError(w, 503, "Sign-in unavailable. Try again later.")
+			return
+		}
+		hash := user.PasswordHash
+		if err != nil {
+			hash = a.loginDummyHash
+		}
+		valid := verifyPassword(hash, input.Password)
+		if !valid || err != nil || user.Disabled || (kind == "admin" && !user.IsAdmin) {
+			limit := a.ownerLimiter
+			if kind == "admin" {
+				limit = a.adminLimiter
+			}
+			limit.fail(a.clientIP(r))
+			apiError(w, 401, "Incorrect username or password.")
+			return
+		}
+		if err := a.grantSession(w, kind, Transfer{}, user); err != nil {
+			apiError(w, 503, "Sign-in unavailable. Try again later.")
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 	}
-	var input struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	select {
-	case a.hashSlots <- struct{}{}:
-		defer func() { <-a.hashSlots }()
-	default:
-		apiError(w, 429, "Password verification busy. Try again shortly.")
-		return
-	}
-	user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u WHERE u.username=?", strings.TrimSpace(input.Username)))
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		apiError(w, 503, "Sign-in unavailable. Try again later.")
-		return
-	}
-	hash := user.PasswordHash
-	if err != nil {
-		hash = a.loginDummyHash
-	}
-	valid := verifyPassword(hash, input.Password)
-	if !valid || err != nil || user.Disabled {
-		a.ownerLimiter.fail(a.clientIP(r))
-		apiError(w, 401, "Incorrect username or password.")
-		return
-	}
-	if err := a.grantSession(w, "owner", Transfer{}, user); err != nil {
-		apiError(w, 503, "Sign-in unavailable. Try again later.")
-		return
-	}
-	writeJSON(w, map[string]bool{"ok": true})
 }
-func (a *App) logout(w http.ResponseWriter, r *http.Request) {
-	_, err := a.store.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=?", tokenHash(a.ownerToken(r)))
-	if err != nil {
-		apiError(w, 500, "Cannot sign out.")
-		return
+func (a *App) logout(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, err := a.store.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=? AND kind=?", tokenHash(a.sessionToken(r, kind)), kind)
+		if err != nil {
+			apiError(w, 500, "Cannot sign out.")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: a.cookieName(sessionCookie(kind)), Value: "", Path: "/", Secure: !a.cfg.Development, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+		writeJSON(w, map[string]bool{"ok": true})
 	}
-	http.SetCookie(w, &http.Cookie{Name: a.cookieName("session"), Value: "", Path: "/", Secure: !a.cfg.Development, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-	writeJSON(w, map[string]bool{"ok": true})
 }
 func (a *App) configuration(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())

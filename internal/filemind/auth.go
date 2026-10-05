@@ -58,18 +58,34 @@ func (a *App) cookieName(kind string) string {
 	return prefix + "filemind-" + kind
 }
 func (a *App) ownerToken(r *http.Request) string {
-	c, e := r.Cookie(a.cookieName("session"))
+	return a.sessionToken(r, "owner")
+}
+func sessionCookie(kind string) string {
+	if kind == "admin" {
+		return "admin-session"
+	}
+	return "session"
+}
+func (a *App) sessionToken(r *http.Request, kind string) string {
+	c, e := r.Cookie(a.cookieName(sessionCookie(kind)))
 	if e != nil || !validToken(c.Value) {
 		return ""
 	}
 	return c.Value
 }
 func (a *App) authenticatedUser(r *http.Request) (User, error) {
-	token := a.ownerToken(r)
+	return a.authenticatedAccount(r, "owner")
+}
+func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
+	token := a.sessionToken(r, kind)
 	if token == "" {
 		return User{}, sql.ErrNoRows
 	}
-	return scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.kind='owner' AND s.auth_version=u.auth_version AND s.expires_at>? AND u.disabled=0", tokenHash(token), time.Now().Unix()))
+	user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.kind=? AND s.auth_version=u.auth_version AND s.expires_at>? AND u.disabled=0", tokenHash(token), kind, time.Now().Unix()))
+	if err == nil && kind == "admin" && !user.IsAdmin {
+		return User{}, sql.ErrNoRows
+	}
+	return user, err
 }
 
 func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer, user User) error {
@@ -77,9 +93,9 @@ func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer, user 
 	lifetime := time.Hour
 	name := a.cookieName("share-" + t.ID)
 	path := "/s/" + t.ShareToken
-	if kind == "owner" {
+	if kind == "owner" || kind == "admin" {
 		lifetime = 24 * time.Hour
-		name = a.cookieName("session")
+		name = a.cookieName(sessionCookie(kind))
 		path = "/"
 	}
 	tx, err := a.store.db.Begin()
@@ -99,9 +115,9 @@ func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer, user 
 	}
 	var userID any
 	version := t.AuthVersion
-	if kind == "owner" {
+	if kind == "owner" || kind == "admin" {
 		var active int
-		if err = tx.QueryRow("SELECT COUNT(*) FROM users WHERE id=? AND auth_version=? AND disabled=0", user.ID, user.AuthVersion).Scan(&active); err != nil {
+		if err = tx.QueryRow("SELECT COUNT(*) FROM users WHERE id=? AND auth_version=? AND disabled=0 AND (? != 'admin' OR is_admin=1)", user.ID, user.AuthVersion, kind).Scan(&active); err != nil {
 			return err
 		}
 		if active != 1 {
@@ -136,6 +152,9 @@ func (a *App) shareAuthenticated(r *http.Request, t Transfer) bool {
 func (a *App) csrfScope(r *http.Request, scope string) string {
 	if scope == "account" {
 		return scope + ":" + a.ownerToken(r)
+	}
+	if scope == "admin-account" {
+		return scope + ":" + a.sessionToken(r, "admin")
 	}
 	return scope
 }

@@ -2,6 +2,7 @@ import { Upload } from "tus-js-client";
 const $ = (selector) => document.querySelector(selector);
 const csrf = $('meta[name="csrf-token"]')?.content;
 const page = document.body.dataset.page;
+const adminSurface = document.body.dataset.adminSurface === "true";
 const bytes = (n) => {
   if (n < 1024) return `${n} B`;
   for (const unit of ["KiB", "MiB", "GiB", "TiB"]) {
@@ -136,7 +137,7 @@ $("#login-form")?.addEventListener("submit", async (event) => {
   try {
     await api("/login", "POST", { username: form.elements.username.value, password: form.elements.password.value });
     form.elements.password.value = "";
-    location.assign("/upload");
+    location.assign(adminSurface ? "/admin/users" : "/upload");
   } catch (e) {
     fail(e);
   } finally {

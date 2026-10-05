@@ -9,16 +9,19 @@
   <link rel="stylesheet" href="/assets/style.css">
   <script defer src="/assets/app.js"></script>
 </head>
-<body data-page="{{.Page}}" data-user-id="{{.User.ID}}">
+<body data-page="{{.Page}}" data-user-id="{{.User.ID}}" data-admin-surface="{{.AdminSurface}}">
 <header class="topbar">
-  <a class="brand" href="/upload"><img src="/assets/icon.svg" alt="" width="24" height="24">FileMind</a>
+  <a class="brand" href="{{if .AdminSurface}}/admin/users{{else}}/upload{{end}}"><img src="/assets/icon.svg" alt="" width="24" height="24">FileMind</a>
   <nav aria-label="Main">
     {{if ne .Page "login"}}
-    <a href="/upload" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
-    <a href="/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
-    {{if .User.IsAdmin}}
+    {{if .AdminSurface}}
     <a href="/admin/users" {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>
     <a href="/admin/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a>
+    <a href="{{.Config.OwnerURL}}/upload">Uploads</a>
+    {{else}}
+    <a href="/upload" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
+    <a href="/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
+    {{if .User.IsAdmin}}<a href="{{.Config.AdminURL}}/admin/users">Admin</a>{{end}}
     {{end}}
     <button type="button" id="logout" class="quiet">Sign out</button>
     {{end}}

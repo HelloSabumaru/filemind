@@ -19,5 +19,5 @@ FROM scratch
 COPY --from=build /filemind /filemind
 COPY --from=build --chown=10001:10001 /data /data
 USER 10001:10001
-EXPOSE 8080 8081
+EXPOSE 8080 8081 8082
 ENTRYPOINT ["/filemind"]

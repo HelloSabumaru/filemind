@@ -52,10 +52,17 @@ func main() {
 		logger.Error("public listener unavailable")
 		os.Exit(1)
 	}
-	slots := []chan struct{}{make(chan struct{}, 16), make(chan struct{}, 112)}
-	servers := []*http.Server{server(a.OwnerHandler(), logger), server(a.PublicHandler(), logger)}
-	listeners := []net.Listener{owner, public}
-	failures := make(chan error, 2)
+	admin, err := net.Listen("tcp", cfg.AdminListen)
+	if err != nil {
+		owner.Close()
+		public.Close()
+		logger.Error("admin listener unavailable")
+		os.Exit(1)
+	}
+	slots := []chan struct{}{make(chan struct{}, 16), make(chan struct{}, 112), make(chan struct{}, 8)}
+	servers := []*http.Server{server(a.OwnerHandler(), logger), server(a.PublicHandler(), logger), server(a.AdminHandler(), logger)}
+	listeners := []net.Listener{owner, public, admin}
+	failures := make(chan error, len(servers))
 	for i, s := range servers {
 		go func() {
 			failures <- s.Serve(&limitedListener{Listener: listeners[i], slots: slots[i], done: make(chan struct{})})
@@ -141,13 +148,14 @@ func (c *limitedConn) Close() error {
 
 func healthcheck() error {
 	client := &http.Client{Timeout: 3 * time.Second}
-	for _, key := range []string{"FILEMIND_OWNER_LISTEN", "FILEMIND_PUBLIC_LISTEN"} {
-		address := os.Getenv(key)
+	for _, item := range []struct{ key, fallback string }{
+		{"FILEMIND_OWNER_LISTEN", ":8080"},
+		{"FILEMIND_PUBLIC_LISTEN", ":8081"},
+		{"FILEMIND_ADMIN_LISTEN", "127.0.0.1:8082"},
+	} {
+		address := os.Getenv(item.key)
 		if address == "" {
-			address = ":8080"
-			if key == "FILEMIND_PUBLIC_LISTEN" {
-				address = ":8081"
-			}
+			address = item.fallback
 		}
 		_, port, err := net.SplitHostPort(address)
 		if err != nil {

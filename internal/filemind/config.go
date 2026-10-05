@@ -14,7 +14,7 @@ import (
 )
 
 type Config struct {
-	DataDir, OwnerListen, PublicListen, OwnerURL, PublicURL                        string
+	DataDir, OwnerListen, PublicListen, AdminListen, OwnerURL, PublicURL, AdminURL string
 	OwnerUsername, OwnerPasswordFile                                               string
 	DefaultExpiry                                                                  time.Duration
 	DefaultDownloadLimit, MaxFileSize, MaxTransferSize, StorageQuota, MinFreeSpace int64
@@ -24,7 +24,7 @@ type Config struct {
 }
 
 func ConfigFromEnv() (Config, error) {
-	c := Config{DataDir: env("FILEMIND_DATA_DIR", "/data"), OwnerListen: env("FILEMIND_OWNER_LISTEN", ":8080"), PublicListen: env("FILEMIND_PUBLIC_LISTEN", ":8081"), OwnerURL: os.Getenv("FILEMIND_OWNER_URL"), PublicURL: os.Getenv("FILEMIND_PUBLIC_URL"), OwnerUsername: env("FILEMIND_OWNER_USERNAME", "admin"), OwnerPasswordFile: os.Getenv("FILEMIND_OWNER_PASSWORD_FILE")}
+	c := Config{DataDir: env("FILEMIND_DATA_DIR", "/data"), OwnerListen: env("FILEMIND_OWNER_LISTEN", ":8080"), PublicListen: env("FILEMIND_PUBLIC_LISTEN", ":8081"), AdminListen: env("FILEMIND_ADMIN_LISTEN", "127.0.0.1:8082"), OwnerURL: os.Getenv("FILEMIND_OWNER_URL"), PublicURL: os.Getenv("FILEMIND_PUBLIC_URL"), AdminURL: os.Getenv("FILEMIND_ADMIN_URL"), OwnerUsername: env("FILEMIND_OWNER_USERNAME", "admin"), OwnerPasswordFile: os.Getenv("FILEMIND_OWNER_PASSWORD_FILE")}
 	var err error
 	if c.Development, err = strconv.ParseBool(env("FILEMIND_INSECURE_DEVELOPMENT", "false")); err != nil {
 		return c, errors.New("invalid FILEMIND_INSECURE_DEVELOPMENT")
@@ -79,7 +79,8 @@ func (c Config) Validate() error {
 	if c.MaxFileSize <= 0 || c.MaxTransferSize < c.MaxFileSize || c.StorageQuota < c.MaxTransferSize || c.StorageQuota > 1<<50 || c.DefaultDownloadLimit < 0 || c.DefaultDownloadLimit > 1000000 || c.DefaultExpiry < 0 || c.DefaultExpiry > 365*24*time.Hour || c.DefaultExpiry%time.Second != 0 || c.MinFreeSpace < 0 {
 		return errors.New("invalid storage or retention settings")
 	}
-	for _, origin := range []string{c.OwnerURL, c.PublicURL} {
+	origins := []string{c.OwnerURL, c.PublicURL, c.AdminURL}
+	for _, origin := range origins {
 		u, err := url.Parse(origin)
 		if err != nil || u.Hostname() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 			return errors.New("origins must be absolute URLs without paths, credentials, queries or fragments")
@@ -96,10 +97,15 @@ func (c Config) Validate() error {
 			}
 		}
 	}
-	if canonicalOrigin(c.OwnerURL) == canonicalOrigin(c.PublicURL) {
-		return errors.New("owner and public origins must differ")
+	for i, origin := range origins {
+		for _, other := range origins[:i] {
+			if canonicalOrigin(origin) == canonicalOrigin(other) {
+				return errors.New("origins must differ")
+			}
+		}
 	}
-	for _, address := range []string{c.OwnerListen, c.PublicListen} {
+	addresses := []string{c.OwnerListen, c.PublicListen, c.AdminListen}
+	for i, address := range addresses {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return errors.New("invalid listener address")
@@ -111,9 +117,11 @@ func (c Config) Validate() error {
 		if c.Demo && !isLoopback(host) {
 			return errors.New("demo listeners must use loopback addresses")
 		}
-	}
-	if c.OwnerListen == c.PublicListen {
-		return errors.New("listeners must differ")
+		for _, other := range addresses[:i] {
+			if address == other {
+				return errors.New("listeners must differ")
+			}
+		}
 	}
 	for _, prefix := range c.TrustedProxies {
 		if !prefix.IsValid() || prefix.Bits() == 0 {

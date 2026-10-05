@@ -29,6 +29,7 @@ type App struct {
 	uploadHandler  http.Handler
 	limiter        *limiter
 	ownerLimiter   *limiter
+	adminLimiter   *limiter
 	hashSlots      chan struct{}
 	downloadSlots  chan struct{}
 	activeMu       sync.Mutex
@@ -46,6 +47,7 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 		return nil, err
 	}
 	cfg.OwnerURL, cfg.PublicURL = canonicalOrigin(cfg.OwnerURL), canonicalOrigin(cfg.PublicURL)
+	cfg.AdminURL = canonicalOrigin(cfg.AdminURL)
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -75,7 +77,7 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 		lock.Close()
 		return nil, errors.New("data directory is already in use")
 	}
-	a := &App{cfg: cfg, lock: lock, logger: logger, hashSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, 8), active: make(map[string]map[string]context.CancelFunc), limiter: newLimiter(), ownerLimiter: newLimiter()}
+	a := &App{cfg: cfg, lock: lock, logger: logger, hashSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, 8), active: make(map[string]map[string]context.CancelFunc), limiter: newLimiter(), ownerLimiter: newLimiter(), adminLimiter: newLimiter()}
 	defer func() {
 		if err != nil {
 			a.Close()

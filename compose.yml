@@ -6,9 +6,12 @@ services:
     ports:
       - "127.0.0.1:9080:8080"
       - "127.0.0.1:9081:8081"
+      - "127.0.0.1:9082:8082"
     environment:
       FILEMIND_OWNER_URL: ${FILEMIND_OWNER_URL:?Set the private HTTPS origin}
       FILEMIND_PUBLIC_URL: ${FILEMIND_PUBLIC_URL:?Set the public HTTPS origin}
+      FILEMIND_ADMIN_URL: ${FILEMIND_ADMIN_URL:?Set the private admin HTTPS origin}
+      FILEMIND_ADMIN_LISTEN: "0.0.0.0:8082"
       FILEMIND_OWNER_USERNAME: ${FILEMIND_OWNER_USERNAME:-admin}
       FILEMIND_OWNER_PASSWORD_FILE: /run/secrets/owner_password
       FILEMIND_DEFAULT_EXPIRY: ${FILEMIND_DEFAULT_EXPIRY:-24h}
