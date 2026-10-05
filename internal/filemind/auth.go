@@ -18,8 +18,8 @@ import (
 )
 
 func hashPassword(password string) (string, error) {
-	if password == "" || len(password) > 256 {
-		return "", errors.New("password must contain 1–256 bytes")
+	if password == "" {
+		return "", errors.New("password is required")
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -30,9 +30,6 @@ func hashPassword(password string) (string, error) {
 }
 
 func verifyPassword(encoded, password string) bool {
-	if len(password) > 256 {
-		return false
-	}
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" || parts[2] != "v=19" || parts[3] != "m=19456,t=2,p=1" {
 		return false

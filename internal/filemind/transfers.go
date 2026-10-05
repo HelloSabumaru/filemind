@@ -72,8 +72,8 @@ func (a *App) newDraft(ctx context.Context, user User, input newTransfer) (Trans
 }
 
 func (a *App) transferPassword(password string) (string, error) {
-	if password == "" || len(password) > 256 {
-		return "", invalid("Password must contain 1–256 bytes.")
+	if password == "" {
+		return "", invalid("Enter a password.")
 	}
 	select {
 	case a.hashSlots <- struct{}{}:

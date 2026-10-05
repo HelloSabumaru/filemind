@@ -3,6 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const csrf = $('meta[name="csrf-token"]')?.content;
 const page = document.body.dataset.page;
 const adminSurface = document.body.dataset.adminSurface === "true";
+let dateFormat = document.body.dataset.dateFormat || "dd/mm/yyyy";
 const transferBase = adminSurface ? "/admin/api/transfers" : "/api/transfers";
 const bytes = (n) => {
   if (n < 1024) return `${n} B`;
@@ -61,13 +62,28 @@ function icon(name) {
 document.querySelectorAll("[data-icon]").forEach((button) => button.append(icon(button.dataset.icon)));
 const systemTheme = matchMedia("(prefers-color-scheme: dark)");
 let selectedTheme;
+const themeURL = new URL(location.href);
+const incomingTheme = themeURL.searchParams.get("theme");
 try {
-  const saved = localStorage.getItem("filemind-theme");
+  const saved = incomingTheme === "light" || incomingTheme === "dark" ? incomingTheme : localStorage.getItem("filemind-theme");
   if (saved === "light" || saved === "dark") selectedTheme = saved;
+  if (incomingTheme === "light" || incomingTheme === "dark") localStorage.setItem("filemind-theme", incomingTheme);
 } catch {}
+if (incomingTheme === "light" || incomingTheme === "dark") {
+  selectedTheme = incomingTheme;
+  themeURL.searchParams.delete("theme");
+  history.replaceState(null, "", themeURL.pathname + themeURL.search + themeURL.hash);
+}
 function applyTheme() {
   if (selectedTheme) document.documentElement.dataset.theme = selectedTheme;
   const dark = selectedTheme ? selectedTheme === "dark" : systemTheme.matches;
+  document.querySelectorAll("[data-app-link]").forEach(link => {
+    const destination = new URL(link.href);
+    if (destination.origin !== location.origin) {
+      destination.searchParams.set("theme", dark ? "dark" : "light");
+      link.href = destination.href;
+    }
+  });
   const button = $("#theme-toggle");
   if (!button) return;
   button.replaceChildren(icon(dark ? "sun" : "moon"));
@@ -117,7 +133,12 @@ async function copy(value) {
   }
 }
 function time(timestamp) {
-  return new Date(timestamp * 1e3).toLocaleString();
+  const value = new Date(timestamp * 1e3);
+  const day = String(value.getDate()).padStart(2, "0");
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const year = value.getFullYear();
+  const date = dateFormat === "yyyy-mm-dd" ? `${year}-${month}-${day}` : dateFormat === "mm/dd/yyyy" ? `${month}/${day}/${year}` : `${day}/${month}/${year}`;
+  return `${date}, ${value.toLocaleTimeString()}`;
 }
 document.querySelectorAll("time[data-timestamp]").forEach((node) => {
   node.textContent = time(Number(node.dataset.timestamp));
@@ -161,6 +182,19 @@ $("#unlock-form")?.addEventListener("submit", async (event) => {
   }
 });
 const fileDigests = new WeakMap();
+function conditionalFields(form) {
+  const groups = [...form.querySelectorAll("[data-toggle]")];
+  function sync() {
+    for (const group of groups) {
+      const checkbox = form.elements[group.dataset.toggle];
+      group.hidden = !checkbox.checked;
+      for (const field of group.querySelectorAll("input, select")) field.disabled = checkbox.disabled || !checkbox.checked;
+    }
+  }
+  for (const group of groups) form.elements[group.dataset.toggle].addEventListener("change", sync);
+  sync();
+  return sync;
+}
 function digestFile(file) {
   if (fileDigests.has(file)) return fileDigests.get(file);
   const result = new Promise((resolve, reject) => {
@@ -205,6 +239,7 @@ async function uploadPage() {
     for (const f of draft.files) states.set(f.id, { name: f.name, size: f.size, percent: f.uploaded ? 100 : 0, label: f.uploaded ? "Uploaded" : "Reselect this file to resume" });
     notice("Reselect unfinished files to resume.");
   }
+  const syncUploadFields = conditionalFields(form);
   const progressViews = new Map();
   const pendingProgress = new Set();
   let progressFrame;
@@ -277,6 +312,7 @@ async function uploadPage() {
     $("#resume-draft").disabled = active;
     $("#pause-upload").textContent = paused ? "Resume" : "Pause";
     for (const name of ["title", "password", "expiryEnabled", "expiryValue", "expiryUnit", "limitEnabled", "downloadLimit"]) form.elements[name].disabled = active || !!draft;
+    syncUploadFields();
   }
   async function run() {
     if (running) return;
@@ -428,6 +464,7 @@ async function uploadPage() {
 async function transfersPage() {
   let offset = 0, editing = null, debounce, generation = 0, expiryChanged = false;
   const container = $("#transfers"), dialog = $("#edit-dialog"), form = $("#edit-form");
+  const syncEditFields = conditionalFields(form);
   async function load() {
     const request = ++generation;
     const [transfers, config] = await Promise.all([api(`${transferBase}?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api(adminSurface ? "/admin/api/settings" : "/api/config")]);
@@ -486,6 +523,7 @@ async function transfersPage() {
         form.elements.password.value = "";
         form.elements.password.required = false;
         $("#edit-password-label").hidden = true;
+        syncEditFields();
         dialog.showModal();
       }));
       if (t.shareUrl) actions.append(action("Revoke", async () => {
@@ -560,7 +598,6 @@ async function usersPage() {
     form.elements.username.value = user?.username || "";
     form.elements.username.readOnly = !!user;
     form.elements.password.required = !user;
-    form.elements.password.minLength = 16;
     form.elements.password.placeholder = user ? "Leave blank to keep current" : "";
     const quota = user ? user.storageQuota : defaults.defaultUserQuota;
     form.elements.quotaEnabled.checked = quota > 0;
@@ -668,6 +705,17 @@ if (page === "settings") settingsPage().catch(fail);
 if (page === "users") usersPage().catch(fail);
 if (page === "upload") uploadPage().catch(fail);
 if (page === "transfers") transfersPage().catch(fail);
+
+$("#preferences-form")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget, button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    const preferences = await api(adminSurface ? "/admin/api/preferences" : "/api/preferences", "PUT", {dateFormat: form.elements.dateFormat.value});
+    dateFormat = preferences.dateFormat;
+    notice("Settings saved.");
+  } catch (error) { fail(error); } finally { button.disabled = false; }
+});
 
 $("#password-form")?.addEventListener("submit", async event => {
  event.preventDefault();

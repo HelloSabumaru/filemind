@@ -110,7 +110,7 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Username = strings.TrimSpace(input.Username)
 	if !validUsername(input.Username) || !validAccountPassword(input.Password) || quota < 0 || quota > settings.StorageQuota {
-		apiError(w, 400, "Check the username and quota; account passwords must contain 16–256 bytes.")
+		apiError(w, 400, "Check the username, password and quota.")
 		return
 	}
 	select {
@@ -186,7 +186,7 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	var hash string
 	if input.Password != nil {
 		if !validAccountPassword(*input.Password) {
-			apiError(w, 400, "Account passwords must contain 16–256 bytes.")
+			apiError(w, 400, "Enter a password.")
 			return
 		}
 		select {

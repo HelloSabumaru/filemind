@@ -126,6 +126,61 @@ async function publishedResult(page) {
   return page.locator("#share-url").inputValue();
 }
 
+test("Admin keeps the main navigation and theme while switching sections", async t => {
+  const page = await login(t,false,"admin",adminPassword);
+  const main = page.getByRole("navigation",{name:"Main",exact:true});
+  const expected = ["Upload","Transfers","Settings","Admin"];
+  async function checkMain() { assert.deepEqual(await main.getByRole("link").allTextContents(),expected); }
+  await checkMain();
+  await page.emulateMedia({colorScheme:"light"});
+  await page.getByRole("button",{name:"Switch to dark theme"}).click();
+  await main.getByRole("link",{name:"Admin",exact:true}).click();
+  await page.getByRole("heading",{name:"Sign in to Admin",exact:true}).waitFor();
+  await checkMain();
+  assert.equal(await main.getByRole("link",{name:"Admin",exact:true}).getAttribute("aria-current"),"page");
+  assert.equal(await page.locator("html").getAttribute("data-theme"),"dark");
+  await page.locator("[name=username]").fill("admin");
+  await page.locator("[name=password]").fill(adminPassword);
+  await page.getByRole("button",{name:"Sign in",exact:true}).click();
+  await page.waitForURL(`${adminURL}/admin/users`);
+  await checkMain();
+  const admin = page.getByRole("navigation",{name:"Admin",exact:true});
+  assert.deepEqual(await admin.getByRole("link").allTextContents(),["Users","All transfers","Server settings"]);
+  await admin.getByRole("link",{name:"All transfers",exact:true}).click();
+  await page.getByRole("heading",{name:"All transfers",exact:true}).waitFor();
+  await checkMain();
+  assert.equal(await main.getByRole("link",{name:"Admin",exact:true}).getAttribute("aria-current"),"page");
+  assert.equal(await main.getByRole("link",{name:"Transfers",exact:true}).getAttribute("aria-current"),null);
+  assert.equal(await admin.getByRole("link",{name:"All transfers",exact:true}).getAttribute("aria-current"),"page");
+  await admin.getByRole("link",{name:"Server settings",exact:true}).click();
+  await page.getByRole("heading",{name:"Server settings",exact:true}).waitFor();
+  await checkMain();
+  await main.getByRole("link",{name:"Settings",exact:true}).click();
+  await page.getByRole("heading",{name:"Change password",exact:true}).waitFor();
+  await checkMain();
+  assert.equal(await main.getByRole("link",{name:"Settings",exact:true}).getAttribute("aria-current"),"page");
+  await main.getByRole("link",{name:"Upload",exact:true}).click();
+  await page.waitForURL(`${ownerURL}/upload`); await readyUpload(page);
+  await checkMain();
+  assert.equal(await page.locator("html").getAttribute("data-theme"),"dark");
+  await main.getByRole("link",{name:"Transfers",exact:true}).click();
+  await page.getByRole("heading",{name:"Transfers",exact:true}).waitFor();
+  assert.equal(page.url(),`${ownerURL}/transfers`);
+  await main.getByRole("link",{name:"Settings",exact:true}).click();
+  await page.getByRole("heading",{name:"Change password",exact:true}).waitFor();
+  assert.equal(page.url(),`${ownerURL}/settings`);
+  await main.getByRole("link",{name:"Admin",exact:true}).click();
+  await page.getByRole("button",{name:"Add user",exact:true}).waitFor();
+  await page.setViewportSize({width:390,height:844});
+  await checkMain();
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"mobile navigation overflows the viewport");
+  if (process.env.FILEMIND_TEST_SCREENSHOTS) await page.screenshot({path:join(process.env.FILEMIND_TEST_SCREENSHOTS,"admin-navigation.png"),fullPage:true});
+  await page.getByRole("button",{name:"Switch to light theme"}).click();
+  await page.locator(".brand").click();
+  await page.waitForURL(`${ownerURL}/upload`); await readyUpload(page);
+  assert.equal(await page.locator("html").getAttribute("data-theme"),"light");
+});
+
 test("upload hashing spans multiple chunks and the browser receives exact contents", {timeout:60000}, async t => {
   const page = await login(t);
   const payload = Buffer.alloc(9 * 1024 * 1024 + 17, "u");
@@ -216,17 +271,19 @@ test("admin account management and self-service password changes work through fo
   const admin = await login(t,true);
   await admin.getByRole("button",{name:"Add user",exact:true}).click();
   await admin.locator("#user-form [name=username]").fill("browser-account");
-  await admin.locator("#user-form [name=password]").fill("browser-user-password-for-validation");
+  await admin.locator("#user-form [name=password]").fill("x");
   await admin.locator("#user-form").getByRole("button",{name:"Save",exact:true}).click();
   await admin.locator("#user-dialog").waitFor({state:"hidden"});
-  const user = await login(t,false,"browser-account","browser-user-password-for-validation");
-  await user.goto(`${ownerURL}/account`);
-  await user.locator("[name=currentPassword]").fill("browser-user-password-for-validation");
-  await user.locator("[name=newPassword]").fill("browser-new-password-for-validation");
+  const user = await login(t,false,"browser-account","x");
+  await user.goto(`${ownerURL}/settings`);
+  assert.equal(await user.getByText("Use 16–256 bytes. Changing your password signs out all sessions and stops active uploads.",{exact:true}).count(),0);
+  assert.ok(await user.locator('input[type="password"]').evaluateAll(inputs => inputs.every(input => !input.hasAttribute("minlength") && !input.hasAttribute("maxlength"))));
+  await user.locator("[name=currentPassword]").fill("x");
+  await user.locator("[name=newPassword]").fill("p".repeat(1024));
   await user.getByRole("button",{name:"Change password",exact:true}).click();
   await user.waitForURL("**/login");
   await user.locator("[name=username]").fill("browser-account");
-  await user.locator("[name=password]").fill("browser-new-password-for-validation");
+  await user.locator("[name=password]").fill("p".repeat(1024));
   await user.getByRole("button",{name:"Sign in",exact:true}).click(); await user.waitForURL("**/upload");
   admin.on("dialog",dialog => dialog.accept());
   const card = admin.locator(".transfer-card").filter({has:admin.getByRole("heading",{name:"browser-account",exact:true})});
@@ -235,6 +292,82 @@ test("admin account management and self-service password changes work through fo
   assert.equal((await api(user,"/api/transfers")).status,401);
 });
 
+
+test("expiry and download values appear only when enabled in upload and edit forms", async t => {
+  const page = await login(t);
+  await select(page,"conditional-values.txt",Buffer.from("conditional settings"));
+  const upload = page.locator("#upload-form");
+  for (const [checkbox, fields] of [["expiryEnabled", ["expiryValue", "expiryUnit"]], ["limitEnabled", ["downloadLimit"]]]) {
+    await upload.locator(`[name=${checkbox}]`).uncheck();
+    for (const field of fields) {
+      assert.equal(await upload.locator(`[name=${field}]`).isVisible(),false);
+      assert.equal(await upload.locator(`[name=${field}]`).isDisabled(),true);
+    }
+    await upload.locator(`[name=${checkbox}]`).check();
+    for (const field of fields) assert.equal(await upload.locator(`[name=${field}]`).isVisible(),true);
+    await upload.locator(`[name=${fields[0]}]`).fill("-1");
+    await upload.locator(`[name=${checkbox}]`).uncheck();
+  }
+  await upload.getByRole("button",{name:"Upload",exact:true}).click();
+  const share = await publishedResult(page);
+  const transfer = (await api(page,"/api/transfers")).body.find(item => item.shareUrl === share);
+  assert.equal(transfer.expiresAt,0);
+  assert.equal(transfer.downloadLimit,0);
+  await page.goto(`${ownerURL}/transfers`);
+  await page.locator(".transfer-card").filter({hasText:"conditional-values.txt"}).getByRole("button",{name:"Edit",exact:true}).click();
+  const edit = page.locator("#edit-form");
+  for (const [checkbox, field] of [["expiryEnabled", "expiryHours"], ["limitEnabled", "downloadLimit"]]) {
+    assert.equal(await edit.locator(`[name=${field}]`).isVisible(),false);
+    assert.equal(await edit.locator(`[name=${field}]`).isDisabled(),true);
+    await edit.locator(`[name=${checkbox}]`).check();
+    assert.equal(await edit.locator(`[name=${field}]`).isVisible(),true);
+    await edit.locator(`[name=${field}]`).fill("-1");
+    await edit.locator(`[name=${checkbox}]`).uncheck();
+  }
+  await edit.getByRole("button",{name:"Save",exact:true}).click();
+  await page.locator("#edit-dialog").waitFor({state:"hidden"});
+  const changed = (await api(page,`/api/transfers/${transfer.id}`)).body;
+  assert.equal(changed.expiresAt,0);
+  assert.equal(changed.downloadLimit,0);
+});
+
+test("date format defaults to dd/mm/yyyy and persists across personal and admin Settings", async t => {
+  const page = await login(t,false,"admin",adminPassword);
+  await select(page,"date-format.txt",Buffer.from("date preference"));
+  await page.getByRole("button",{name:"Upload",exact:true}).click();
+  const share = await publishedResult(page);
+  const transfer = (await api(page,"/api/transfers")).body.find(item => item.shareUrl === share);
+  const dates = await page.evaluate(timestamp => {
+    const date = new Date(timestamp * 1000);
+    const day = String(date.getDate()).padStart(2,"0"), month = String(date.getMonth()+1).padStart(2,"0"), year = date.getFullYear();
+    return {"dd/mm/yyyy":`${day}/${month}/${year}`, "mm/dd/yyyy":`${month}/${day}/${year}`, "yyyy-mm-dd":`${year}-${month}-${day}`};
+  },transfer.expiresAt);
+  await page.goto(`${ownerURL}/transfers`);
+  const card = page.locator(".transfer-card").filter({hasText:"date-format.txt"});
+  await card.getByText(`Expires ${dates["dd/mm/yyyy"]}`,{exact:false}).waitFor();
+  await page.goto(`${ownerURL}/settings`);
+  assert.equal(await page.locator("[name=dateFormat]").inputValue(),"dd/mm/yyyy");
+  try {
+    for (const format of ["mm/dd/yyyy", "yyyy-mm-dd"]) {
+      await page.locator("[name=dateFormat]").selectOption(format);
+      await page.locator("#preferences-form").getByRole("button",{name:"Save",exact:true}).click();
+      await page.getByText("Settings saved.",{exact:true}).waitFor();
+      await page.reload();
+      assert.equal(await page.locator("[name=dateFormat]").inputValue(),format);
+      await page.goto(`${ownerURL}/transfers`);
+      await card.getByText(`Expires ${dates[format]}`,{exact:false}).waitFor();
+      await page.goto(`${ownerURL}/settings`);
+    }
+    const admin = await login(t,true);
+    await admin.getByRole("navigation",{name:"Main",exact:true}).getByRole("link",{name:"Settings",exact:true}).click();
+    assert.equal(await admin.locator("[name=dateFormat]").inputValue(),"yyyy-mm-dd");
+    await admin.goto(`${adminURL}/admin/transfers`);
+    await admin.locator(".transfer-card").filter({hasText:"date-format.txt"}).getByText(`Expires ${dates["yyyy-mm-dd"]}`,{exact:false}).waitFor();
+    const recipient = await browser.newPage(); t.after(() => recipient.close());
+    await recipient.goto(share);
+    await recipient.locator("time[data-timestamp]").filter({hasText:dates["dd/mm/yyyy"]}).waitFor();
+  } finally { assert.equal((await api(page,"/api/preferences","PUT",{dateFormat:"dd/mm/yyyy"})).status,200); }
+});
 
 test("an abrupt process crash preserves links and unfinished uploads", {timeout:60000}, async t => {
   const page = await login(t), payload = Buffer.from("recover after an abrupt crash");

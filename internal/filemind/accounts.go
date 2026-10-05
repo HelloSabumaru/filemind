@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func validAccountPassword(password string) bool { return len(password) >= 16 && len(password) <= 256 }
+func validAccountPassword(password string) bool { return password != "" }
 
 func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 	var input struct {
@@ -18,7 +18,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validAccountPassword(input.NewPassword) {
-		apiError(w, 400, "Account passwords must contain 16–256 bytes.")
+		apiError(w, 400, "Enter a new password.")
 		return
 	}
 	select {
@@ -128,6 +128,9 @@ func (a *App) archiveAccount(ctx context.Context, actor User, id string) error {
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", id)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=?", preferencesKey(id))
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, "UPDATE transfers SET status='deleted',closed_at=?,auth_version=auth_version+1,revision=revision+1 WHERE user_id=?", time.Now().Unix(), id)

@@ -64,11 +64,8 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	}
 	password := strings.TrimRight(string(passwordBytes), "\r\n")
 	clear(passwordBytes)
-	if password == "" || len(password) > 256 {
-		return nil, errors.New("owner password must contain 1–256 bytes")
-	}
-	if !cfg.Development && len(password) < 16 {
-		return nil, errors.New("owner password must contain 16–256 bytes")
+	if password == "" {
+		return nil, errors.New("owner password is required")
 	}
 	if err = os.MkdirAll(filepath.Join(cfg.DataDir, "uploads"), 0700); err != nil {
 		return nil, storeError(err)

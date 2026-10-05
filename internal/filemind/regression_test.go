@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -121,7 +122,7 @@ func TestAdminSessionsAccountsAndTransferManagement(t *testing.T) {
 	admin := adminBrowser(t, a)
 	owner := newBrowser(a, false)
 	owner.login(t)
-	for _, path := range []string{"/admin/users", "/admin/api/users", "/admin/api/settings", "/admin/api/transfers", "/admin/account"} {
+	for _, path := range []string{"/admin/users", "/admin/api/users", "/admin/api/settings", "/admin/api/transfers", "/admin/preferences", "/admin/api/preferences"} {
 		checkStatus(t, owner.request("GET", path, nil, nil), 404)
 		checkStatus(t, newBrowser(a, true).request("GET", path, nil, nil), 404)
 	}
@@ -336,21 +337,52 @@ func TestArchiveReclaimsPayloadsUsernameAndCapacity(t *testing.T) {
 	checkStatus(t, admin.json("DELETE", "/admin/api/users/"+adminID, nil), 400)
 }
 
-func TestAccountPasswordPolicyAndSelfService(t *testing.T) {
+func TestAccountPasswordChangesAcceptShortAndLongPasswords(t *testing.T) {
 	a := testApp(t)
 	admin := adminBrowser(t, a)
-	checkStatus(t, admin.json("POST", "/admin/api/users", map[string]string{"username": "weak", "password": "x"}), 400)
+	checkStatus(t, admin.json("POST", "/admin/api/users", map[string]string{"username": "short-password", "password": "x"}), 201)
+	checkStatus(t, admin.json("POST", "/admin/api/users", map[string]string{"username": "empty-password", "password": ""}), 400)
 	account := addAccount(t, admin, "self-service", 0)
-	checkStatus(t, admin.json("PATCH", "/admin/api/users/"+account.ID, map[string]string{"password": "x"}), 400)
+	checkStatus(t, admin.json("PATCH", "/admin/api/users/"+account.ID, map[string]string{"password": "x"}), 200)
 	owner, second := newBrowser(a, false), newBrowser(a, false)
-	loginAs(t, owner, "self-service", accountTestPassword)
-	loginAs(t, second, "self-service", accountTestPassword)
+	loginAs(t, owner, "self-service", "x")
+	loginAs(t, second, "self-service", "x")
 	checkStatus(t, owner.json("POST", "/api/password", map[string]string{"currentPassword": "wrong", "newPassword": "new-account-password-for-validation"}), 403)
-	checkStatus(t, owner.json("POST", "/api/password", map[string]string{"currentPassword": accountTestPassword, "newPassword": "x"}), 400)
-	checkStatus(t, owner.json("POST", "/api/password", map[string]string{"currentPassword": accountTestPassword, "newPassword": "new-account-password-for-validation"}), 200)
+	checkStatus(t, owner.json("POST", "/api/password", map[string]string{"currentPassword": "x", "newPassword": ""}), 400)
+	checkStatus(t, owner.json("POST", "/api/password", map[string]string{"currentPassword": "x", "newPassword": "y"}), 200)
 	checkStatus(t, owner.request("GET", "/api/transfers", nil, nil), 401)
 	checkStatus(t, second.request("GET", "/api/transfers", nil, nil), 401)
-	loginAs(t, newBrowser(a, false), "self-service", "new-account-password-for-validation")
+	loginAs(t, owner, "self-service", "y")
+	longPassword := strings.Repeat("p", 1024)
+	checkStatus(t, owner.json("POST", "/api/password", map[string]string{"currentPassword": "y", "newPassword": longPassword}), 200)
+	loginAs(t, newBrowser(a, false), "self-service", longPassword)
+}
+
+func TestBootstrapAndTransferPasswordsAcceptShortAndLongPasswords(t *testing.T) {
+	for _, password := range []string{"x", strings.Repeat("p", 1024)} {
+		t.Run(fmt.Sprint(len(password)), func(t *testing.T) {
+			a := testApp(t)
+			cfg := a.cfg
+			a.Close()
+			cfg.Development = false
+			cfg.OwnerURL, cfg.PublicURL, cfg.AdminURL = "https://owner.example.test", "https://public.example.test", "https://admin.example.test"
+			if err := os.WriteFile(cfg.OwnerPasswordFile, []byte(password), 0600); err != nil {
+				t.Fatal(err)
+			}
+			restarted, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(restarted.Close)
+			owner := newBrowser(restarted, false)
+			loginAs(t, owner, "admin", password)
+			transfer := publish(t, owner, draft(t, owner, 0, password, "private"), "private")
+			public := newBrowser(restarted, true)
+			public.page(t, "/s/"+transfer.ShareToken)
+			checkStatus(t, public.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": password}), 200)
+			checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 200)
+		})
+	}
 }
 
 func TestTargetedPurgeAndBrowserDownloadErrors(t *testing.T) {

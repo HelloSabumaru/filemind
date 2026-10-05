@@ -22,7 +22,9 @@ func (a *App) OwnerHandler() http.Handler {
 	m.HandleFunc("GET /login", a.loginPage("owner"))
 	m.HandleFunc("POST /login", a.login("owner"))
 	m.HandleFunc("GET /upload", a.accountPage("upload", "owner"))
-	m.HandleFunc("GET /account", a.accountPage("account", "owner"))
+	m.HandleFunc("GET /settings", a.accountPage("preferences", "owner"))
+	m.HandleFunc("GET /api/preferences", a.ownerAPI(a.getUserPreferences))
+	m.HandleFunc("PUT /api/preferences", a.ownerAPI(a.saveUserPreferences))
 	m.HandleFunc("POST /api/password", a.ownerAPI(a.changePassword))
 	m.HandleFunc("GET /transfers", a.accountPage("transfers", "owner"))
 	m.HandleFunc("POST /logout", a.ownerAPI(a.logout("owner")))
@@ -50,7 +52,9 @@ func (a *App) AdminHandler() http.Handler {
 	m.HandleFunc("GET /login", a.loginPage("admin"))
 	m.HandleFunc("POST /login", a.login("admin"))
 	m.HandleFunc("POST /logout", a.adminAPI(a.logout("admin")))
-	m.HandleFunc("GET /admin/account", a.accountPage("account", "admin"))
+	m.HandleFunc("GET /admin/preferences", a.accountPage("preferences", "admin"))
+	m.HandleFunc("GET /admin/api/preferences", a.adminAPI(a.getUserPreferences))
+	m.HandleFunc("PUT /admin/api/preferences", a.adminAPI(a.saveUserPreferences))
 	m.HandleFunc("POST /admin/api/password", a.adminAPI(a.changePassword))
 	m.HandleFunc("GET /admin/transfers", a.accountPage("transfers", "admin"))
 	m.HandleFunc("GET /admin/api/transfers", a.adminAPI(a.listAdminTransfers))
@@ -194,6 +198,7 @@ func (a *App) render(w http.ResponseWriter, name string, data any) {
 
 type pageData struct {
 	Page, CSRF, Error, BackURL, RequestID string
+	DateFormat                            string
 	Transfer                              Transfer
 	Locked                                bool
 	Config                                Config
@@ -205,7 +210,7 @@ func (a *App) loginPage(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, scope, home := a.accountOptions(kind)
 		if _, err := a.authenticatedAccount(r, kind); err == nil {
-			http.Redirect(w, r, home, 303)
+			http.Redirect(w, r, withTheme(r, home), 303)
 			return
 		}
 		a.render(w, "owner", pageData{Page: "login", CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, AdminSurface: kind == "admin"})
@@ -215,12 +220,24 @@ func (a *App) accountPage(page, kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, err := a.authenticatedAccount(r, kind)
 		if err != nil {
-			http.Redirect(w, r, "/login", 303)
+			http.Redirect(w, r, withTheme(r, "/login"), 303)
 			return
 		}
 		_, scope, _ := a.accountOptions(kind)
-		a.render(w, "owner", pageData{Page: page, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin"})
+		preferences, err := a.userPreferences(r.Context(), user.ID)
+		if err != nil {
+			a.operationError(w, r, "read_preferences", err)
+			return
+		}
+		a.render(w, "owner", pageData{Page: page, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", DateFormat: preferences.DateFormat})
 	}
+}
+
+func withTheme(r *http.Request, destination string) string {
+	if theme := r.URL.Query().Get("theme"); theme == "light" || theme == "dark" {
+		return destination + "?theme=" + theme
+	}
+	return destination
 }
 
 func (a *App) login(kind string) http.HandlerFunc {

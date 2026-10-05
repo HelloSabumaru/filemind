@@ -122,6 +122,8 @@ h2 { margin-bottom: .6rem; font-size: 1rem; font-weight: 600; }
 nav { display: flex; align-items: center; gap: 1rem; }
 nav a { color: var(--muted); text-decoration: none; font-size: .875rem; }
 nav a[aria-current] { color: var(--text); font-weight: 600; }
+.section-nav { flex-wrap: wrap; margin-bottom: 1.5rem; padding-bottom: .75rem; border-bottom: 1px solid var(--border); }
+.section-label { margin-right: .5rem; color: var(--muted); font-size: .8rem; }
 main { max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; }
 .upload-page, .recipient, .settings-page { max-width: 720px; margin-left: auto; margin-right: auto; }
 .panel { padding: 1.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
@@ -143,6 +145,9 @@ main { max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; }
 .file-description strong { font-size: .875rem; font-weight: 500; overflow-wrap: anywhere; }
 .file-description .small { overflow-wrap: anywhere; }
 .settings { margin-top: 1rem; }
+.personal-settings { display: grid; gap: 1.25rem; }
+.personal-settings h1 { margin-bottom: 0; }
+#password-form { display: grid; gap: 1rem; }
 .form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; margin-bottom: 1rem; }
 .check { display: flex; align-items: center; gap: .5rem; min-height: 28px; margin-bottom: .4rem; }
 .check input { margin: 0; }
