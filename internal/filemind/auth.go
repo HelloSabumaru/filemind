@@ -81,7 +81,7 @@ func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
 	if token == "" {
 		return User{}, sql.ErrNoRows
 	}
-	user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.kind=? AND s.auth_version=u.auth_version AND s.expires_at>? AND u.disabled=0", tokenHash(token), kind, time.Now().Unix()))
+	user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.kind=? AND s.auth_version=u.auth_version AND s.expires_at>? AND u.disabled=0 AND u.archived=0", tokenHash(token), kind, time.Now().Unix()))
 	if err == nil && kind == "admin" && !user.IsAdmin {
 		return User{}, sql.ErrNoRows
 	}
@@ -117,7 +117,7 @@ func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer, user 
 	version := t.AuthVersion
 	if kind == "owner" || kind == "admin" {
 		var active int
-		if err = tx.QueryRow("SELECT COUNT(*) FROM users WHERE id=? AND auth_version=? AND disabled=0 AND (? != 'admin' OR is_admin=1)", user.ID, user.AuthVersion, kind).Scan(&active); err != nil {
+		if err = tx.QueryRow("SELECT COUNT(*) FROM users WHERE id=? AND auth_version=? AND disabled=0 AND archived=0 AND (? != 'admin' OR is_admin=1)", user.ID, user.AuthVersion, kind).Scan(&active); err != nil {
 			return err
 		}
 		if active != 1 {

@@ -3,6 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const csrf = $('meta[name="csrf-token"]')?.content;
 const page = document.body.dataset.page;
 const adminSurface = document.body.dataset.adminSurface === "true";
+const transferBase = adminSurface ? "/admin/api/transfers" : "/api/transfers";
 const bytes = (n) => {
   if (n < 1024) return `${n} B`;
   for (const unit of ["KiB", "MiB", "GiB", "TiB"]) {
@@ -81,7 +82,7 @@ $("#theme-toggle")?.addEventListener("click", () => {
 systemTheme.addEventListener("change", applyTheme);
 applyTheme();
 function openQR(transferID) {
-  $("#qr-image").src = `/api/transfers/${encodeURIComponent(transferID)}/qr.png`;
+  $("#qr-image").src = `${transferBase}/${encodeURIComponent(transferID)}/qr.png`;
   $("#qr-dialog").showModal();
 }
 $("#close-qr")?.addEventListener("click", () => $("#qr-dialog").close());
@@ -159,18 +160,25 @@ $("#unlock-form")?.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
-document.querySelectorAll(".download-link").forEach((link) => {
-  link.addEventListener("click", async (event) => {
-    event.preventDefault();
-    try {
-      const response = await fetch(link.href, { method: "HEAD", credentials: "same-origin" });
-      if (!response.ok) throw new Error(response.status === 401 ? "Reopen the transfer link and enter its password." : "This file is no longer available or is already downloading. Refresh and retry.");
-      location.assign(link.href);
-    } catch (e) {
-      fail(e);
-    }
+const fileDigests = new WeakMap();
+function digestFile(file) {
+  if (fileDigests.has(file)) return fileDigests.get(file);
+  const result = new Promise((resolve, reject) => {
+    const worker = new Worker("/assets/hash-worker.js");
+    worker.onmessage = ({data}) => {
+      if (data.digest || data.error) {
+        worker.terminate();
+        if (data.error) reject(new Error(data.error));
+        else resolve(data.digest);
+      }
+    };
+    worker.onerror = () => { worker.terminate(); reject(new Error("Cannot verify this file. Refresh and retry.")); };
+    worker.postMessage(file);
   });
-});
+  fileDigests.set(file,result);
+  result.catch(() => fileDigests.delete(file));
+  return result;
+}
 async function uploadPage() {
   const config = await api("/api/config");
   const form = $("#upload-form");
@@ -197,20 +205,41 @@ async function uploadPage() {
     for (const f of draft.files) states.set(f.id, { name: f.name, size: f.size, percent: f.uploaded ? 100 : 0, label: f.uploaded ? "Uploaded" : "Reselect this file to resume" });
     notice("Reselect unfinished files to resume.");
   }
+  const progressViews = new Map();
+  const pendingProgress = new Set();
+  let progressFrame;
+  function updateProgress(state) {
+    const view = progressViews.get(state);
+    if (!view) return;
+    view.status.textContent = `${bytes(state.size)} · ${state.label}`;
+    view.progress.value = state.percent;
+  }
+  function queueProgress(state) {
+    pendingProgress.add(state);
+    if (progressFrame) return;
+    progressFrame = requestAnimationFrame(() => {
+      progressFrame = null;
+      for (const state of pendingProgress) updateProgress(state);
+      pendingProgress.clear();
+    });
+  }
   function renderFiles() {
+    progressViews.clear();
     const list = $("#selected-files");
     list.replaceChildren();
     const entries = draft ? [...states.values()] : chosen.map((f) => ({ name: f.name, size: f.size, percent: 0, label: "Selected" }));
     for (const f of entries) {
       const li = el("li");
       const detail = el("div", "file-description");
-      detail.append(el("strong", "", f.name), el("span", "small muted", `${bytes(f.size)} \xB7 ${f.label}`));
+      const status = el("span", "small muted", `${bytes(f.size)} · ${f.label}`);
+      detail.append(el("strong", "", f.name), status);
       if (draft) {
         const progress = el("progress");
         progress.max = 100;
         progress.value = f.percent;
         progress.setAttribute("aria-label", `Upload progress for ${f.name}`);
         detail.append(progress);
+        progressViews.set(f, {status,progress});
       }
       li.append(detail);
       list.append(li);
@@ -220,7 +249,7 @@ async function uploadPage() {
     if (running) return;
     const selected = [...files];
     if (!selected.length) return;
-    if (selected.length > 100 || selected.some((f) => f.size > config.maxFileSize) || selected.reduce((n, f) => n + f.size, 0) > config.maxTransferSize) {
+    if (selected.length > 100 || (draft ? selected.some(f => !draft.files.some(saved => saved.name === f.name && saved.size === f.size)) : selected.some((f) => f.size > config.maxFileSize) || selected.reduce((n, f) => n + f.size, 0) > config.maxTransferSize)) {
       notice("The selected files exceed the upload limits.", true);
       return;
     }
@@ -260,7 +289,12 @@ async function uploadPage() {
         const expiry = form.elements.expiryEnabled.checked ? Math.round(Number(form.elements.expiryValue.value) * Number(form.elements.expiryUnit.value)) : 0;
         const limit = form.elements.limitEnabled.checked ? Number(form.elements.downloadLimit.value) : 0;
         if (!Number.isSafeInteger(expiry) || expiry < 0 || !Number.isSafeInteger(limit) || limit < 0) throw new Error("Check the transfer settings.");
-        draft = await api("/api/transfers", "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files: chosen.map((f) => ({ name: f.name, size: f.size })) });
+        const files = [];
+        for (const file of chosen) {
+          notice(`Checking ${file.name} before upload…`);
+          files.push({ name: file.name, size: file.size, sha256: await digestFile(file) });
+        }
+        draft = await api("/api/transfers", "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files });
         form.elements.password.value = "";
         history.replaceState(null, "", `/upload?resume=${draft.id}`);
       } else {
@@ -272,9 +306,14 @@ async function uploadPage() {
       for (const serverFile of pending) {
         const index = remaining.findIndex((f) => f.name === serverFile.name && f.size === serverFile.size);
         if (index < 0) throw new Error(`Reselect ${serverFile.name} (${bytes(serverFile.size)}) to resume.`);
-        fileMap.set(serverFile.id, remaining.splice(index, 1)[0]);
+        const file = remaining.splice(index, 1)[0];
+        notice(`Checking ${file.name} before resuming…`);
+        const sha256 = await digestFile(file);
+        if (sha256 !== serverFile.sha256) throw new Error(`Selected file does not match the original: ${file.name}. Reselect the original file.`);
+        fileMap.set(serverFile.id,file);
       }
       for (const f of draft.files) states.set(f.id, { name: f.name, size: f.size, percent: f.uploaded ? 100 : 0, label: f.uploaded ? "Uploaded" : "Queued" });
+      $("#notice").hidden = true;
       controls(true);
       $("#resume-draft").hidden = true;
       renderFiles();
@@ -301,23 +340,23 @@ async function uploadPage() {
             onProgress: (sent, total) => {
               state.percent = total ? Math.min(99, Math.round(sent / total * 100)) : 0;
               state.label = `${state.percent}%`;
-              renderFiles();
+              queueProgress(state);
             },
             onSuccess: () => {
               state.percent = 100;
               state.label = "Uploaded";
-              renderFiles();
+              updateProgress(state);
               finish();
             },
             onError: (error) => {
-              state.label = "Interrupted \u2014 resume from Transfers";
-              renderFiles();
+              state.label = "Interrupted — resume from Transfers";
+              updateProgress(state);
               finish(new Error(error.originalResponse?.getStatus() === 401 ? "Your session expired. Sign in again and resume from Transfers." : `Upload interrupted: ${serverFile.name}. Resume from Transfers to retry.`));
             }
           });
           job = { up, finish };
           state.label = "Uploading";
-          renderFiles();
+          updateProgress(state);
           if (!paused) up.start();
         });
       }
@@ -387,11 +426,11 @@ async function uploadPage() {
   controls(false);
 }
 async function transfersPage() {
-  let offset = 0, editing = null, debounce, generation = 0;
+  let offset = 0, editing = null, debounce, generation = 0, expiryChanged = false;
   const container = $("#transfers"), dialog = $("#edit-dialog"), form = $("#edit-form");
   async function load() {
     const request = ++generation;
-    const [transfers, config] = await Promise.all([api(`/api/transfers?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api("/api/config")]);
+    const [transfers, config] = await Promise.all([api(`${transferBase}?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api(adminSurface ? "/admin/api/settings" : "/api/config")]);
     if (request !== generation) return;
     $("#storage").textContent = `${bytes(config.storageUsed)} / ${bytes(config.storageQuota)}`;
     container.replaceChildren();
@@ -402,6 +441,7 @@ async function transfersPage() {
       card.append(heading);
       const meta = el("div", "transfer-meta");
       meta.append(el("span", "", `${t.files.length} file${t.files.length === 1 ? "" : "s"} \xB7 ${bytes(t.files.reduce((n, f) => n + f.size, 0))}`));
+      if (adminSurface) meta.append(el("span", "", `Owner: ${t.ownerUsername}`));
       if (t.expiresAt) meta.append(el("span", "", `Expires ${time(t.expiresAt)}`));
       if (t.downloadLimit) meta.append(el("span", "", `${t.downloadLimit} downloads per file`));
       if (t.passwordRequired) meta.append(el("span", "", "Password protected"));
@@ -412,6 +452,12 @@ async function transfersPage() {
       for (const f of t.files) {
         const li = el("li");
         li.append(el("span", "", f.name), el("span", "small muted", f.deleted ? "Deleted" : `${f.downloads} downloads \xB7 ${f.uploaded ? bytes(f.size) : "Unfinished"}${f.inProgress ? " \xB7 downloading" : ""}`));
+        if (f.integrityError) li.append(el("span","small danger",f.integrityError));
+        if (t.status === "draft" && !adminSurface && (f.started || f.integrityError)) li.append(action("Restart file", async () => {
+          if (!confirm(`Discard saved upload data for ${f.name}?`)) return;
+          await api(`${transferBase}/${t.id}/files/${f.id}/restart`, "POST", {});
+          await load();
+        }));
         list.append(li);
       }
       details.append(list);
@@ -422,13 +468,15 @@ async function transfersPage() {
         qr.setAttribute("aria-label", "QR code");
         actions.append(copyAction(t.shareUrl), qr);
       }
-      if (t.status === "draft") {
+      if (t.status === "draft" && !adminSurface) {
         const resume = el("a", "button secondary", "Resume upload");
         resume.href = `/upload?resume=${t.id}`;
         actions.append(resume);
       }
       if (t.status === "draft" || t.status === "published") actions.append(action("Edit", () => {
         editing = t;
+        expiryChanged = false;
+        $("#edit-error").hidden = true;
         form.elements.title.value = t.title;
         form.elements.expiryEnabled.checked = (t.status === "draft" ? t.expirySeconds : t.expiresAt) > 0;
         form.elements.expiryHours.value = t.status === "draft" ? t.expirySeconds / 3600 || 24 : t.expiresAt ? Math.max(1e-3, (t.expiresAt - Date.now() / 1e3) / 3600) : 24;
@@ -442,13 +490,13 @@ async function transfersPage() {
       }));
       if (t.shareUrl) actions.append(action("Revoke", async () => {
         if (confirm("Disable this link and stop active downloads? Files stay until expiry or deletion.")) {
-          await api(`/api/transfers/${t.id}/revoke`, "POST", {});
+          await api(`${transferBase}/${t.id}/revoke`, "POST", {});
           await load();
         }
       }, "quiet danger"));
       actions.append(action("Delete", async () => {
         if (confirm("Delete this transfer\u2019s stored files? This cannot be undone.")) {
-          await api(`/api/transfers/${t.id}`, "DELETE");
+          await api(`${transferBase}/${t.id}`, "DELETE");
           await load();
         }
       }, "quiet danger"));
@@ -463,22 +511,22 @@ async function transfersPage() {
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
     try {
-      const input = { title: form.elements.title.value, downloadLimit: form.elements.limitEnabled.checked ? Number(form.elements.downloadLimit.value) : 0 };
-      if (!form.elements.expiryEnabled.checked) input.expirySeconds = 0;
-      else input.expirySeconds = Math.round(Number(form.elements.expiryHours.value) * 3600);
+      const input = { revision: editing.revision, title: form.elements.title.value, downloadLimit: form.elements.limitEnabled.checked ? Number(form.elements.downloadLimit.value) : 0 };
+      if (expiryChanged) input.expirySeconds = form.elements.expiryEnabled.checked ? Math.round(Number(form.elements.expiryHours.value) * 3600) : 0;
       if (form.elements.passwordAction.value !== "keep") input.password = form.elements.passwordAction.value === "set" ? form.elements.password.value : "";
-      await api(`/api/transfers/${editing.id}`, "PATCH", input);
+      await api(`${transferBase}/${editing.id}`, "PATCH", input);
       form.elements.password.value = "";
       dialog.close();
       await load();
       notice("Transfer updated.");
     } catch (e) {
-      dialog.close();
-      fail(e);
+      $("#edit-error").textContent = e.message;
+      $("#edit-error").hidden = false;
     } finally {
       button.disabled = false;
     }
   });
+  for (const name of ["expiryEnabled","expiryHours"]) form.elements[name].addEventListener("input", () => {expiryChanged=true;});
   form.elements.passwordAction.addEventListener("change", () => {
     $("#edit-password-label").hidden = form.elements.passwordAction.value !== "set";
     form.elements.password.required = form.elements.passwordAction.value === "set";
@@ -512,6 +560,7 @@ async function usersPage() {
     form.elements.username.value = user?.username || "";
     form.elements.username.readOnly = !!user;
     form.elements.password.required = !user;
+    form.elements.password.minLength = 16;
     form.elements.password.placeholder = user ? "Leave blank to keep current" : "";
     const quota = user ? user.storageQuota : defaults.defaultUserQuota;
     form.elements.quotaEnabled.checked = quota > 0;
@@ -538,6 +587,11 @@ async function usersPage() {
         await api(`/admin/api/users/${user.id}`, "PATCH", { disabled: !user.disabled });
         await load();
       }, user.disabled ? "secondary" : "quiet danger"));
+      if (!user.isAdmin) actions.append(action("Delete", async () => {
+        if (!confirm(`Delete ${user.username} and all their transfers? Stored files will be removed and published links will stop.`)) return;
+        await api(`/admin/api/users/${user.id}`, "DELETE");
+        await load();
+      }, "quiet danger"));
       card.append(actions);
       container.append(card);
     }
@@ -589,6 +643,8 @@ async function settingsPage() {
   form.elements.expiryHours.value = settings.expirySeconds / 3600;
   form.elements.downloadLimit.value = settings.downloadLimit;
   $("#settings-storage").textContent = `${bytes(settings.storageUsed)} reserved`;
+  const maintenance=settings.maintenance;
+  $("#maintenance-status").textContent = `${bytes(maintenance.freeSpace)} disk space free · ${maintenance.purgeBacklog} pending file removals · Last cleanup ${time(maintenance.lastCleanup)}${maintenance.cleanupFailed ? " · Cleanup needs attention" : ""}`;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = form.querySelector('button[type="submit"]');
@@ -612,3 +668,12 @@ if (page === "settings") settingsPage().catch(fail);
 if (page === "users") usersPage().catch(fail);
 if (page === "upload") uploadPage().catch(fail);
 if (page === "transfers") transfersPage().catch(fail);
+
+$("#password-form")?.addEventListener("submit", async event => {
+ event.preventDefault();
+ const form=event.currentTarget, button=form.querySelector("button");button.disabled=true;
+ try {
+  await api(adminSurface ? "/admin/api/password" : "/api/password", "POST", {currentPassword:form.elements.currentPassword.value,newPassword:form.elements.newPassword.value});
+  form.reset();location.assign("/login");
+ } catch(error) {fail(error);} finally {button.disabled=false;}
+});

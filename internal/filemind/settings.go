@@ -59,13 +59,19 @@ func (a *App) initializeSettings() error {
 func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 	var used int64
 	if err := a.store.db.QueryRowContext(r.Context(), "SELECT COALESCE(SUM(size),0) FROM files WHERE deleted=0").Scan(&used); err != nil {
-		apiError(w, 500, "Cannot read settings.")
+		a.operationError(w, r, "read_settings", err)
+		return
+	}
+	maintenance, err := a.maintenance(r.Context())
+	if err != nil {
+		a.operationError(w, r, "read_maintenance", err)
 		return
 	}
 	writeJSON(w, struct {
 		Settings
-		StorageUsed int64 `json:"storageUsed"`
-	}{a.settings(), used})
+		StorageUsed int64             `json:"storageUsed"`
+		Maintenance maintenanceStatus `json:"maintenance"`
+	}{a.settings(), used, maintenance})
 }
 
 func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
@@ -81,13 +87,17 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	defer a.settingsMu.Unlock()
 	tx, err := a.store.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		apiError(w, 500, "Cannot save settings.")
+		a.operationError(w, r, "save_settings", err)
 		return
 	}
 	defer tx.Rollback()
+	if err = currentAccount(r.Context(), tx, userFromContext(r.Context()), true); err != nil {
+		a.operationError(w, r, "save_settings", err)
+		return
+	}
 	var used int64
 	if err = tx.QueryRowContext(r.Context(), "SELECT COALESCE(SUM(size),0) FROM files WHERE deleted=0").Scan(&used); err != nil {
-		apiError(w, 500, "Cannot save settings.")
+		a.operationError(w, r, "save_settings", err)
 		return
 	}
 	if settings.StorageQuota < used {
@@ -96,17 +106,18 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := json.Marshal(settings)
 	if err != nil {
-		apiError(w, 500, "Cannot save settings.")
+		a.operationError(w, r, "save_settings", err)
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), "INSERT INTO settings(key,value) VALUES('preferences',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", string(data)); err != nil {
-		apiError(w, 500, "Cannot save settings.")
+		a.operationError(w, r, "save_settings", err)
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		apiError(w, 500, "Cannot save settings.")
+		a.operationError(w, r, "save_settings", err)
 		return
 	}
 	a.preferences.Store(&settings)
+	a.logger.Info("settings changed", "operation", "save_settings", "actor_id", userFromContext(r.Context()).ID, "request_id", r.Context().Value(requestIDKey{}))
 	writeJSON(w, settings)
 }

@@ -18,8 +18,11 @@ jobs:
         with:
           go-version: '1.26.8'
       - run: npm ci && npm run check && npm run build && npm audit --audit-level=high
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:web
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go test -race ./... && go vet ./...
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/filemind ./cmd/filemind
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: docker compose --env-file .env.example config --quiet
+      - run: bash scripts/container-smoke.sh

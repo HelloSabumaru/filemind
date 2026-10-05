@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"image/png"
@@ -42,6 +44,7 @@ func testApp(t *testing.T) *App {
 type browser struct {
 	app     *App
 	public  bool
+	admin   bool
 	cookies map[string]*http.Cookie
 	csrf    string
 }
@@ -56,6 +59,10 @@ func (b *browser) request(method, path string, body io.Reader, headers map[strin
 	if b.public {
 		origin = b.app.cfg.PublicURL
 		h = b.app.PublicHandler()
+	}
+	if b.admin {
+		origin = b.app.cfg.AdminURL
+		h = b.app.AdminHandler()
 	}
 	r := httptest.NewRequest(method, origin+path, body)
 	r.RemoteAddr = "127.0.0.1:12345"
@@ -85,6 +92,17 @@ func (b *browser) request(method, path string, body io.Reader, headers map[strin
 
 func (b *browser) json(method, path string, input any) *httptest.ResponseRecorder {
 	data, _ := json.Marshal(input)
+	if method == "PATCH" && strings.HasPrefix(path, "/api/transfers/") {
+		var patch map[string]any
+		if json.Unmarshal(data, &patch) == nil && patch != nil {
+			if _, exists := patch["revision"]; !exists {
+				if transfer, err := b.app.store.transfer(context.Background(), strings.TrimPrefix(path, "/api/transfers/")); err == nil {
+					patch["revision"] = transfer.Revision
+					data, _ = json.Marshal(patch)
+				}
+			}
+		}
+	}
 	return b.request(method, path, bytes.NewReader(data), map[string]string{"Content-Type": "application/json"})
 }
 
@@ -127,7 +145,7 @@ func draft(t *testing.T, b *browser, limit int64, password string, payloads ...s
 	t.Helper()
 	files := []map[string]any{}
 	for i, data := range payloads {
-		files = append(files, map[string]any{"name": "file-" + strconv.Itoa(i) + ".txt", "size": len(data)})
+		files = append(files, map[string]any{"name": "file-" + strconv.Itoa(i) + ".txt", "size": len(data), "sha256": testDigest(data)})
 	}
 	return readTransfer(t, b.json("POST", "/api/transfers", map[string]any{"title": "Validation transfer", "expirySeconds": 86400, "downloadLimit": limit, "password": password, "files": files}))
 }
@@ -235,16 +253,16 @@ func TestUploadValidationAndQuota(t *testing.T) {
 	b := newBrowser(a, false)
 	b.login(t)
 	for _, name := range []string{"../outside", "/tmp/file", "bad\\path", "bad\x00name"} {
-		checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": name, "size": 1}}}), 400)
+		checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": name, "size": 1, "sha256": testDigest("x")}}}), 400)
 	}
 	transfer := draft(t, b, 0, "", "12345678")
-	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "too-big", "size": 11}}}), 400)
-	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "quota", "size": 5}}}), 400)
+	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "too-big", "size": 11, "sha256": testDigest("12345678901")}}}), 400)
+	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "quota", "size": 5, "sha256": testDigest("12345")}}}), 409)
 	checkStatus(t, b.request("POST", "/uploads/", nil, map[string]string{"Tus-Resumable": "1.0.0", "Upload-Length": "9", "Upload-Metadata": "file_id " + base64.StdEncoding.EncodeToString([]byte(transfer.Files[0].ID))}), 409)
 	checkStatus(t, b.json("DELETE", "/api/transfers/"+transfer.ID, nil), 200)
 	draft(t, b, 0, "", "12345")
 	a.cfg.MinFreeSpace = 1 << 60
-	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "disk-full", "size": 1}}}), 507)
+	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "disk-full", "size": 1, "sha256": testDigest("x")}}}), 507)
 }
 
 func TestActiveUploadDoesNotBlockOtherTransfersAndCanBeDeleted(t *testing.T) {
@@ -500,7 +518,14 @@ func TestInterruptedFileAndZIPReleaseAllowances(t *testing.T) {
 	for _, path := range []string{downloadPath(transfer, 0), "/s/" + transfer.ShareToken + "/archive"} {
 		r := httptest.NewRequest("GET", a.cfg.PublicURL+path, nil)
 		w := &failingWriter{httptest.NewRecorder(), 200}
-		a.PublicHandler().ServeHTTP(w, r)
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != http.ErrAbortHandler {
+					t.Fatalf("interrupted response must abort transport, got %v", recovered)
+				}
+			}()
+			a.PublicHandler().ServeHTTP(w, r)
+		}()
 		files, _ := a.store.files(context.Background(), transfer.ID)
 		for _, f := range files {
 			if f.Downloads != 0 || f.Reserved != 0 || f.Deleted {
@@ -548,7 +573,7 @@ func TestExpiryRevocationCleanupAndHistory(t *testing.T) {
 	if err = a.cleanup(); err != nil {
 		t.Fatal(err)
 	}
-	transfers, err := a.store.list(context.Background(), "", 0)
+	transfers, err := a.store.list(context.Background(), current.UserID, "", 0)
 	if err != nil || len(transfers) != 0 {
 		t.Fatal("history retained past limit")
 	}
@@ -608,4 +633,9 @@ func TestProductionConfiguration(t *testing.T) {
 	if cfg.Validate() == nil {
 		t.Fatal("path origin allowed")
 	}
+}
+
+func testDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }

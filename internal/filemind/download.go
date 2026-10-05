@@ -3,6 +3,7 @@ package filemind
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"mime"
@@ -17,11 +18,11 @@ import (
 func (a *App) authorizedTransfer(w http.ResponseWriter, r *http.Request) (Transfer, bool) {
 	t, err := a.store.publicTransfer(r.Context(), r.PathValue("token"))
 	if err != nil {
-		notFound(w)
+		a.downloadOperationError(w, r, "read_public_transfer", err)
 		return t, false
 	}
 	if !a.shareAuthenticated(r, t) {
-		apiError(w, 401, "Open the transfer page and enter its password first.")
+		a.downloadError(w, r, 401, "Open the transfer page and enter its password first.")
 		return t, false
 	}
 	return t, true
@@ -30,7 +31,7 @@ func (a *App) downloadCapacity(w http.ResponseWriter, r *http.Request) (func(), 
 	ip := a.clientIP(r)
 	if !a.limiter.download(ip) {
 		w.Header().Set("Retry-After", "10")
-		apiError(w, 429, "Too many simultaneous downloads.")
+		a.downloadError(w, r, 429, "Too many simultaneous downloads.")
 		return nil, false
 	}
 	select {
@@ -39,7 +40,7 @@ func (a *App) downloadCapacity(w http.ResponseWriter, r *http.Request) (func(), 
 	default:
 		a.limiter.release(ip)
 		w.Header().Set("Retry-After", "10")
-		apiError(w, 429, "Downloads busy. Try again shortly.")
+		a.downloadError(w, r, 429, "Downloads busy. Try again shortly.")
 		return nil, false
 	}
 }
@@ -49,6 +50,7 @@ type streamWriter struct {
 	ctx    context.Context
 	bytes  int64
 	status int
+	err    error
 }
 
 func (w *streamWriter) WriteHeader(status int) {
@@ -60,6 +62,7 @@ func (w *streamWriter) WriteHeader(status int) {
 func (w *streamWriter) Header() http.Header { return w.writer.Header() }
 func (w *streamWriter) Write(data []byte) (int, error) {
 	if err := w.ctx.Err(); err != nil {
+		w.err = err
 		return 0, err
 	}
 	http.NewResponseController(w.writer).SetWriteDeadline(time.Now().Add(time.Minute))
@@ -67,6 +70,9 @@ func (w *streamWriter) Write(data []byte) (int, error) {
 		w.status = 200
 	}
 	n, err := w.writer.Write(data)
+	if err != nil {
+		w.err = err
+	}
 	w.bytes += int64(n)
 	return n, err
 }
@@ -93,12 +99,18 @@ func (a *App) streamContext(r *http.Request, w http.ResponseWriter, t Transfer, 
 }
 
 func (a *App) complete(lease string, success bool) {
-	if err := a.store.finishReservation(lease, success); err != nil {
-		a.logger.Error("download accounting failed")
+	var transferID string
+	err := a.store.db.QueryRow("SELECT f.transfer_id FROM reservations r JOIN files f ON f.id=r.file_id WHERE r.id=? LIMIT 1", lease).Scan(&transferID)
+	if err != nil {
+		a.logFailure("find_download_reservation", err, "reservation_id", lease)
 		return
 	}
-	if err := a.cleanup(); err != nil {
-		a.logger.Error("cleanup failed")
+	if err = a.store.finishReservation(lease, success); err != nil {
+		a.logFailure("download_accounting", err, "reservation_id", lease)
+		return
+	}
+	if err = a.purgeTransfer(context.Background(), transferID); err != nil {
+		a.logFailure("purge_transfer", err, "transfer_id", transferID)
 	}
 }
 
@@ -109,24 +121,24 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 	}
 	var selected *File
 	for i := range t.Files {
-		if t.Files[i].ID == r.PathValue("id") && !t.Files[i].Deleted && (t.DownloadLimit == 0 || t.Files[i].Downloads < t.DownloadLimit) {
+		if t.Files[i].ID == r.PathValue("id") && t.Files[i].Uploaded && !t.Files[i].Deleted && (t.DownloadLimit == 0 || t.Files[i].Downloads < t.DownloadLimit) {
 			selected = &t.Files[i]
 			break
 		}
 	}
 	if selected == nil {
-		notFound(w)
+		a.downloadError(w, r, 404, "Transfer unavailable.")
 		return
 	}
 	payload, err := a.root.Open(selected.ID)
 	if err != nil {
-		notFound(w)
+		a.downloadError(w, r, 404, "Transfer unavailable.")
 		return
 	}
 	defer payload.Close()
 	stat, err := payload.Stat()
 	if err != nil || !stat.Mode().IsRegular() || stat.Size() != selected.Size {
-		apiError(w, 503, "File unavailable.")
+		a.downloadError(w, r, 503, "File unavailable.")
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -147,7 +159,7 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	lease, err := a.store.reserve(r.Context(), t, []File{*selected})
 	if err != nil {
-		apiError(w, 409, "File unavailable or already downloading. Refresh and retry.")
+		a.downloadOperationError(w, r, "reserve_download", err)
 		return
 	}
 	ctx, end := a.streamContext(r, w, t, lease)
@@ -156,7 +168,7 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 	current, err := a.store.publicTransfer(ctx, t.ShareToken)
 	if err != nil || current.AuthVersion != t.AuthVersion {
 		a.complete(lease, false)
-		notFound(w)
+		a.downloadError(w, r, 404, "Transfer unavailable.")
 		return
 	}
 	if t.DownloadLimit > 0 {
@@ -170,6 +182,9 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 		success := err == nil && ctx.Err() == nil && n == selected.Size
 		payload.Close()
 		a.complete(lease, success)
+		if !success {
+			panic(http.ErrAbortHandler)
+		}
 		return
 	}
 	writer := &streamWriter{writer: w, ctx: ctx}
@@ -178,6 +193,9 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 	success := writer.status == 200 && writer.bytes == selected.Size && ctx.Err() == nil && flushErr == nil
 	payload.Close()
 	a.complete(lease, success)
+	if writer.err != nil || ctx.Err() != nil || flushErr != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (a *App) archive(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +210,7 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(selected) == 0 {
-		notFound(w)
+		a.downloadError(w, r, 404, "Transfer unavailable.")
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
@@ -208,7 +226,7 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	lease, err := a.store.reserve(r.Context(), t, selected)
 	if err != nil {
-		apiError(w, 409, "A file is already downloading or unavailable. Refresh and retry.")
+		a.downloadOperationError(w, r, "reserve_download", err)
 		return
 	}
 	ctx, end := a.streamContext(r, w, t, lease)
@@ -216,7 +234,7 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 	current, err := a.store.publicTransfer(ctx, t.ShareToken)
 	if err != nil || current.AuthVersion != t.AuthVersion {
 		a.complete(lease, false)
-		notFound(w)
+		a.downloadError(w, r, 404, "Transfer unavailable.")
 		return
 	}
 	writer := &streamWriter{writer: w, ctx: ctx}
@@ -267,6 +285,14 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 		err = http.NewResponseController(w).Flush()
 	}
 	a.complete(lease, err == nil && ctx.Err() == nil)
+	if err != nil || ctx.Err() != nil {
+		a.logFailure("stream_archive", err, "transfer_id", t.ID)
+		if writer.status == 0 {
+			a.downloadError(w, r, 503, "A stored file is unavailable. Please contact the sender.")
+		} else {
+			panic(http.ErrAbortHandler)
+		}
+	}
 }
 
 type contextReader struct {
@@ -279,4 +305,37 @@ func (r *contextReader) Read(data []byte) (int, error) {
 		return 0, err
 	}
 	return r.reader.Read(data)
+}
+
+// Use the actual GET result for browser errors; a separate HEAD request cannot
+// reserve availability and successful attachments must never be buffered.
+func (a *App) downloadError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	if !strings.Contains(r.Header.Get("Accept"), "text/html") {
+		apiError(w, status, message)
+		return
+	}
+	back := ""
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) >= 3 && parts[1] == "s" && validToken(parts[2]) {
+		back = "/s/" + parts[2]
+	}
+	w.Header().Del("Content-Disposition")
+	w.Header().Del("Content-Length")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	requestID, _ := r.Context().Value(requestIDKey{}).(string)
+	a.render(w, "download-error", pageData{Error: message, BackURL: back, RequestID: requestID})
+}
+
+func (a *App) downloadOperationError(w http.ResponseWriter, r *http.Request, operation string, err error) {
+	var p *problem
+	switch {
+	case errors.As(err, &p):
+		a.downloadError(w, r, p.status, p.message)
+	case errors.Is(err, sql.ErrNoRows):
+		a.downloadError(w, r, 404, "Transfer unavailable.")
+	default:
+		a.logFailure(operation, err, "request_id", r.Context().Value(requestIDKey{}))
+		a.downloadError(w, r, 503, "Storage unavailable. Please retry later.")
+	}
 }

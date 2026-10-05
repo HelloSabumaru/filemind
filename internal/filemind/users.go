@@ -2,6 +2,8 @@ package filemind
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -53,7 +55,11 @@ func (a *App) transferAPI(next http.HandlerFunc) http.HandlerFunc {
 		var found int
 		id := r.PathValue("id")
 		err := a.store.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM transfers WHERE id=? AND user_id=?", id, userFromContext(r.Context()).ID).Scan(&found)
-		if !validID(id) || err != nil || found != 1 {
+		if err != nil {
+			a.operationError(w, r, "read_transfer_owner", err)
+			return
+		}
+		if !validID(id) || found != 1 {
 			notFound(w)
 			return
 		}
@@ -64,9 +70,9 @@ func (a *App) transferAPI(next http.HandlerFunc) http.HandlerFunc {
 func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.store.db.QueryContext(r.Context(), `SELECT `+userColumns+`,
  (SELECT COALESCE(SUM(f.size),0) FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE t.user_id=u.id AND f.deleted=0)
- FROM users u ORDER BY u.is_admin DESC,u.username`)
+ FROM users u WHERE u.archived=0 ORDER BY u.is_admin DESC,u.username`)
 	if err != nil {
-		apiError(w, 500, "Cannot read users.")
+		a.operationError(w, r, "list_accounts", err)
 		return
 	}
 	defer rows.Close()
@@ -74,13 +80,13 @@ func (a *App) listUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var user User
 		if err = rows.Scan(&user.ID, &user.Username, &user.IsAdmin, &user.Disabled, &user.StorageQuota, &user.AuthVersion, &user.PasswordHash, &user.StorageUsed); err != nil {
-			apiError(w, 500, "Cannot read users.")
+			a.operationError(w, r, "list_accounts", err)
 			return
 		}
 		users = append(users, user)
 	}
-	if rows.Err() != nil {
-		apiError(w, 500, "Cannot read users.")
+	if err = rows.Err(); err != nil {
+		a.operationError(w, r, "list_accounts", err)
 		return
 	}
 	writeJSON(w, users)
@@ -103,8 +109,8 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		quota = *input.StorageQuota
 	}
 	input.Username = strings.TrimSpace(input.Username)
-	if !validUsername(input.Username) || input.Password == "" || len(input.Password) > 256 || quota < 0 || quota > settings.StorageQuota {
-		apiError(w, 400, "Check the username, password and quota.")
+	if !validUsername(input.Username) || !validAccountPassword(input.Password) || quota < 0 || quota > settings.StorageQuota {
+		apiError(w, 400, "Check the username and quota; account passwords must contain 16–256 bytes.")
 		return
 	}
 	select {
@@ -116,18 +122,22 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := hashPassword(input.Password)
 	if err != nil {
-		apiError(w, 500, "Cannot create account.")
+		a.operationError(w, r, "create_account", err)
 		return
 	}
 	tx, err := a.store.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		apiError(w, 500, "Cannot create account.")
+		a.operationError(w, r, "create_account", err)
 		return
 	}
 	defer tx.Rollback()
+	if err = currentAccount(r.Context(), tx, userFromContext(r.Context()), true); err != nil {
+		a.operationError(w, r, "manage_account", err)
+		return
+	}
 	var count, duplicate int
-	if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*),COALESCE(SUM(username=?),0) FROM users", input.Username).Scan(&count, &duplicate); err != nil {
-		apiError(w, 500, "Cannot create account.")
+	if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*),COALESCE(SUM(username=?),0) FROM users WHERE archived=0", input.Username).Scan(&count, &duplicate); err != nil {
+		a.operationError(w, r, "create_account", err)
 		return
 	}
 	if duplicate > 0 {
@@ -140,13 +150,14 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user := User{ID: randomID(), Username: input.Username, StorageQuota: quota}
 	if _, err = tx.ExecContext(r.Context(), "INSERT INTO users(id,username,password_hash,storage_quota) VALUES(?,?,?,?)", user.ID, user.Username, hash, user.StorageQuota); err != nil {
-		apiError(w, 500, "Cannot create account.")
+		a.operationError(w, r, "create_account", err)
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		apiError(w, 500, "Cannot create account.")
+		a.operationError(w, r, "create_account", err)
 		return
 	}
+	a.logger.Info("account created", "operation", "create_account", "actor_id", userFromContext(r.Context()).ID, "user_id", user.ID, "request_id", r.Context().Value(requestIDKey{}))
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, user)
@@ -174,8 +185,8 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var hash string
 	if input.Password != nil {
-		if *input.Password == "" || len(*input.Password) > 256 {
-			apiError(w, 400, "Password must contain 1–256 bytes.")
+		if !validAccountPassword(*input.Password) {
+			apiError(w, 400, "Account passwords must contain 16–256 bytes.")
 			return
 		}
 		select {
@@ -188,7 +199,7 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 		var err error
 		hash, err = hashPassword(*input.Password)
 		if err != nil {
-			apiError(w, 500, "Cannot change account.")
+			a.operationError(w, r, "edit_account", err)
 			return
 		}
 	}
@@ -196,13 +207,21 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	defer a.uploadMu.Unlock()
 	tx, err := a.store.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		apiError(w, 500, "Cannot change account.")
+		a.operationError(w, r, "edit_account", err)
 		return
 	}
 	defer tx.Rollback()
-	user, err := scanUser(tx.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u WHERE u.id=?", id))
-	if err != nil {
+	if err = currentAccount(r.Context(), tx, userFromContext(r.Context()), true); err != nil {
+		a.operationError(w, r, "manage_account", err)
+		return
+	}
+	user, err := scanUser(tx.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u WHERE u.id=? AND u.archived=0", id))
+	if errors.Is(err, sql.ErrNoRows) {
 		apiError(w, 404, "Account unavailable.")
+		return
+	}
+	if err != nil {
+		a.operationError(w, r, "edit_account", err)
 		return
 	}
 	if user.IsAdmin && input.Disabled != nil && *input.Disabled {
@@ -223,24 +242,25 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 		user.AuthVersion++
 	}
 	if _, err = tx.ExecContext(r.Context(), "UPDATE users SET password_hash=?,disabled=?,storage_quota=?,auth_version=? WHERE id=?", user.PasswordHash, user.Disabled, user.StorageQuota, user.AuthVersion, id); err != nil {
-		apiError(w, 500, "Cannot change account.")
+		a.operationError(w, r, "edit_account", err)
 		return
 	}
 	if invalidate {
 		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE user_id=?", id); err != nil {
-			apiError(w, 500, "Cannot change account.")
+			a.operationError(w, r, "edit_account", err)
 			return
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		apiError(w, 500, "Cannot change account.")
+		a.operationError(w, r, "edit_account", err)
 		return
 	}
 	if invalidate {
 		if err = a.cancelUserUploads(context.Background(), id); err != nil {
-			a.logger.Error("upload cancellation failed")
+			a.logFailure("cancel_uploads", err, "user_id", id)
 		}
 	}
+	a.logger.Info("account changed", "operation", "edit_account", "actor_id", userFromContext(r.Context()).ID, "user_id", user.ID, "request_id", r.Context().Value(requestIDKey{}))
 	writeJSON(w, user)
 }
 

@@ -6,3 +6,5 @@
 /internal/filemind/web/dist/
 /node_modules/
 /coverage.out
+
+backups/

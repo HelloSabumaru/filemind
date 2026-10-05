@@ -22,6 +22,8 @@ func (a *App) OwnerHandler() http.Handler {
 	m.HandleFunc("GET /login", a.loginPage("owner"))
 	m.HandleFunc("POST /login", a.login("owner"))
 	m.HandleFunc("GET /upload", a.accountPage("upload", "owner"))
+	m.HandleFunc("GET /account", a.accountPage("account", "owner"))
+	m.HandleFunc("POST /api/password", a.ownerAPI(a.changePassword))
 	m.HandleFunc("GET /transfers", a.accountPage("transfers", "owner"))
 	m.HandleFunc("POST /logout", a.ownerAPI(a.logout("owner")))
 	m.HandleFunc("GET /api/config", a.ownerAPI(a.configuration))
@@ -33,6 +35,7 @@ func (a *App) OwnerHandler() http.Handler {
 	m.HandleFunc("POST /api/transfers/{id}/publish", a.transferAPI(a.publish))
 	m.HandleFunc("POST /api/transfers/{id}/revoke", a.transferAPI(a.revokeTransfer))
 	m.HandleFunc("GET /api/transfers/{id}/qr.png", a.transferAPI(a.qr))
+	m.HandleFunc("POST /api/transfers/{id}/files/{fileID}/restart", a.transferAPI(a.restartFile))
 	for _, pattern := range []string{"OPTIONS /uploads/{$}", "POST /uploads/{$}", "HEAD /uploads/{id}", "PATCH /uploads/{id}"} {
 		m.HandleFunc(pattern, a.ownerAPI(a.upload))
 	}
@@ -47,10 +50,20 @@ func (a *App) AdminHandler() http.Handler {
 	m.HandleFunc("GET /login", a.loginPage("admin"))
 	m.HandleFunc("POST /login", a.login("admin"))
 	m.HandleFunc("POST /logout", a.adminAPI(a.logout("admin")))
+	m.HandleFunc("GET /admin/account", a.accountPage("account", "admin"))
+	m.HandleFunc("POST /admin/api/password", a.adminAPI(a.changePassword))
+	m.HandleFunc("GET /admin/transfers", a.accountPage("transfers", "admin"))
+	m.HandleFunc("GET /admin/api/transfers", a.adminAPI(a.listAdminTransfers))
+	m.HandleFunc("GET /admin/api/transfers/{id}", a.adminAPI(a.getTransfer))
+	m.HandleFunc("PATCH /admin/api/transfers/{id}", a.adminAPI(a.editTransfer))
+	m.HandleFunc("POST /admin/api/transfers/{id}/revoke", a.adminAPI(a.revokeTransfer))
+	m.HandleFunc("DELETE /admin/api/transfers/{id}", a.adminAPI(a.deleteTransfer))
+	m.HandleFunc("GET /admin/api/transfers/{id}/qr.png", a.adminAPI(a.qr))
 	m.HandleFunc("GET /admin/users", a.accountPage("users", "admin"))
 	m.HandleFunc("GET /admin/settings", a.accountPage("settings", "admin"))
 	m.HandleFunc("GET /admin/api/users", a.adminAPI(a.listUsers))
 	m.HandleFunc("POST /admin/api/users", a.adminAPI(a.createUser))
+	m.HandleFunc("DELETE /admin/api/users/{id}", a.adminAPI(a.deleteUser))
 	m.HandleFunc("PATCH /admin/api/users/{id}", a.adminAPI(a.editUser))
 	m.HandleFunc("GET /admin/api/settings", a.adminAPI(a.getSettings))
 	m.HandleFunc("PUT /admin/api/settings", a.adminAPI(a.saveSettings))
@@ -99,6 +112,9 @@ func (w *responseLog) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (a *App) middleware(next http.Handler, surface string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		requestID := randomID()
+		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
+		w.Header().Set("X-Request-ID", requestID)
 		out := &responseLog{ResponseWriter: w}
 		w = out
 		defer func() {
@@ -109,7 +125,7 @@ func (a *App) middleware(next http.Handler, surface string) http.Handler {
 			if route == "" {
 				route = "unknown"
 			}
-			a.logger.Info("request", "surface", surface, "route", route, "method", r.Method, "status", out.status, "bytes", out.bytes, "duration_ms", time.Since(start).Milliseconds())
+			a.logger.Info("request", "request_id", requestID, "surface", surface, "route", route, "method", r.Method, "status", out.status, "bytes", out.bytes, "duration_ms", time.Since(start).Milliseconds())
 		}()
 		w.Header().Set("Cache-Control", "private, no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -125,7 +141,11 @@ func (a *App) middleware(next http.Handler, surface string) http.Handler {
 			}
 			if allowed, retry := limit.allow(a.clientIP(r), surface == "public"); !allowed {
 				w.Header().Set("Retry-After", strconv.Itoa(retry))
-				apiError(w, 429, "Too many requests or incorrect passwords. Try again later.")
+				if surface == "public" {
+					a.downloadError(w, r, 429, "Too many requests or incorrect passwords. Try again later.")
+				} else {
+					apiError(w, 429, "Too many requests or incorrect passwords. Try again later.")
+				}
 				return
 			}
 		}
@@ -168,17 +188,17 @@ func (a *App) accountAPI(kind string, next http.HandlerFunc) http.HandlerFunc {
 func (a *App) render(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := a.templates.ExecuteTemplate(w, name, data); err != nil {
-		a.logger.Error("page rendering failed")
+		a.logFailure("render_page", err)
 	}
 }
 
 type pageData struct {
-	Page, CSRF, Error string
-	Transfer          Transfer
-	Locked            bool
-	Config            Config
-	User              User
-	AdminSurface      bool
+	Page, CSRF, Error, BackURL, RequestID string
+	Transfer                              Transfer
+	Locked                                bool
+	Config                                Config
+	User                                  User
+	AdminSurface                          bool
 }
 
 func (a *App) loginPage(kind string) http.HandlerFunc {
@@ -226,7 +246,7 @@ func (a *App) login(kind string) http.HandlerFunc {
 		}
 		user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u WHERE u.username=?", strings.TrimSpace(input.Username)))
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			apiError(w, 503, "Sign-in unavailable. Try again later.")
+			a.operationError(w, r, "sign_in", err)
 			return
 		}
 		hash := user.PasswordHash
@@ -244,7 +264,7 @@ func (a *App) login(kind string) http.HandlerFunc {
 			return
 		}
 		if err := a.grantSession(w, kind, Transfer{}, user); err != nil {
-			apiError(w, 503, "Sign-in unavailable. Try again later.")
+			a.operationError(w, r, "sign_in", err)
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})
@@ -254,7 +274,7 @@ func (a *App) logout(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, err := a.store.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=? AND kind=?", tokenHash(a.sessionToken(r, kind)), kind)
 		if err != nil {
-			apiError(w, 500, "Cannot sign out.")
+			a.operationError(w, r, "sign_out", err)
 			return
 		}
 		http.SetCookie(w, &http.Cookie{Name: a.cookieName(sessionCookie(kind)), Value: "", Path: "/", Secure: !a.cfg.Development, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
@@ -266,7 +286,7 @@ func (a *App) configuration(w http.ResponseWriter, r *http.Request) {
 	settings := a.settings()
 	var used int64
 	if err := a.store.db.QueryRowContext(r.Context(), "SELECT COALESCE(SUM(f.size),0) FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE t.user_id=? AND f.deleted=0", user.ID).Scan(&used); err != nil {
-		apiError(w, 500, "Cannot read storage usage.")
+		a.operationError(w, r, "read_usage", err)
 		return
 	}
 	quota := settings.StorageQuota
@@ -282,6 +302,12 @@ func (a *App) ownerJSON(w http.ResponseWriter, t Transfer) {
 	writeJSON(w, t)
 }
 func (a *App) listTransfers(w http.ResponseWriter, r *http.Request) {
+	a.transferList(w, r, userFromContext(r.Context()).ID)
+}
+func (a *App) listAdminTransfers(w http.ResponseWriter, r *http.Request) {
+	a.transferList(w, r, "")
+}
+func (a *App) transferList(w http.ResponseWriter, r *http.Request, userID string) {
 	search := r.URL.Query().Get("q")
 	offset, e := strconv.Atoi(r.URL.Query().Get("offset"))
 	if e != nil {
@@ -291,9 +317,9 @@ func (a *App) listTransfers(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "Invalid search.")
 		return
 	}
-	transfers, err := a.store.list(r.Context(), search, offset)
+	transfers, err := a.store.list(r.Context(), userID, search, offset)
 	if err != nil {
-		apiError(w, 500, "Cannot read transfers.")
+		a.operationError(w, r, "list_transfers", err)
 		return
 	}
 	for i := range transfers {
@@ -306,7 +332,7 @@ func (a *App) listTransfers(w http.ResponseWriter, r *http.Request) {
 func (a *App) getTransfer(w http.ResponseWriter, r *http.Request) {
 	t, e := a.store.transfer(r.Context(), r.PathValue("id"))
 	if e != nil {
-		notFound(w)
+		a.operationError(w, r, "read_transfer", e)
 		return
 	}
 	a.ownerJSON(w, t)
@@ -316,181 +342,50 @@ func (a *App) createTransfer(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	a.settingsMu.Lock()
-	defer a.settingsMu.Unlock()
-	settings := a.settings()
-	var total int64
-	for _, f := range input.Files {
-		if f.Size < 0 || f.Size > settings.MaxTransferSize-total {
-			apiError(w, 400, "Transfer exceeds size limits.")
-			return
-		}
-		total += f.Size
-	}
-	space, err := freeSpace(a.cfg.DataDir)
-	if err != nil || space-total < a.cfg.MinFreeSpace {
-		apiError(w, 507, "Insufficient free disk space.")
-		return
-	}
-	hash := ""
-	if input.Password != "" {
-		select {
-		case a.hashSlots <- struct{}{}:
-			defer func() { <-a.hashSlots }()
-		default:
-			apiError(w, 429, "Password verification busy.")
-			return
-		}
-		hash, err = hashPassword(input.Password)
-		if err != nil {
-			apiError(w, 400, err.Error())
-			return
-		}
-	}
-	id, err := a.store.create(r.Context(), input, hash, settings)
+	t, err := a.newDraft(r.Context(), userFromContext(r.Context()), input)
 	if err != nil {
-		apiError(w, 400, err.Error())
-		return
-	}
-	t, err := a.store.transfer(r.Context(), id)
-	if err != nil {
-		apiError(w, 500, "Cannot read new transfer.")
+		a.operationError(w, r, "create_transfer", err)
 		return
 	}
 	a.ownerJSON(w, t)
 }
 
 func (a *App) editTransfer(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Title         *string `json:"title"`
-		ExpirySeconds *int64  `json:"expirySeconds"`
-		DownloadLimit *int64  `json:"downloadLimit"`
-		Password      *string `json:"password"`
-	}
+	var input transferPatch
 	if !decode(w, r, &input) {
 		return
 	}
-	t, err := a.store.transfer(r.Context(), r.PathValue("id"))
+	t, err := a.updateTransfer(r.Context(), userFromContext(r.Context()), r.PathValue("id"), input, adminRequest(r))
 	if err != nil {
-		notFound(w)
-		return
-	}
-	if t.Status != "published" && t.Status != "draft" {
-		apiError(w, 409, "Closed transfers cannot be changed.")
-		return
-	}
-	if input.Title != nil {
-		if len(*input.Title) > 200 || strings.TrimSpace(*input.Title) == "" {
-			apiError(w, 400, "Invalid title.")
-			return
-		}
-		t.Title = *input.Title
-	}
-	if input.ExpirySeconds != nil {
-		if *input.ExpirySeconds < 0 || *input.ExpirySeconds > 31536000 {
-			apiError(w, 400, "Invalid expiry.")
-			return
-		}
-		t.ExpirySeconds = *input.ExpirySeconds
-		if t.Status == "published" {
-			t.ExpiresAt = 0
-			if t.ExpirySeconds > 0 {
-				t.ExpiresAt = time.Now().Unix() + t.ExpirySeconds
-			}
-		}
-	}
-	if input.DownloadLimit != nil {
-		if *input.DownloadLimit < 0 || *input.DownloadLimit > 1000000 {
-			apiError(w, 400, "Invalid download limit.")
-			return
-		}
-		t.DownloadLimit = *input.DownloadLimit
-	}
-	if input.Password != nil {
-		if *input.Password == "" {
-			t.PasswordHash = ""
-		} else {
-			select {
-			case a.hashSlots <- struct{}{}:
-				defer func() { <-a.hashSlots }()
-			default:
-				apiError(w, 429, "Password verification busy.")
-				return
-			}
-			t.PasswordHash, err = hashPassword(*input.Password)
-			if err != nil {
-				apiError(w, 400, err.Error())
-				return
-			}
-		}
-	}
-	tx, err := a.store.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		apiError(w, 500, "Cannot change transfer.")
-		return
-	}
-	defer tx.Rollback()
-	var active int
-	err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM reservations r JOIN files f ON f.id=r.file_id WHERE f.transfer_id=?", t.ID).Scan(&active)
-	if err != nil {
-		apiError(w, 500, "Cannot change transfer.")
-		return
-	}
-	if active > 0 {
-		apiError(w, 409, "Wait for active downloads to finish, or revoke the transfer.")
-		return
-	}
-	result, err := tx.ExecContext(r.Context(), "UPDATE transfers SET title=?,expiry_seconds=?,expires_at=?,download_limit=?,password_hash=?,auth_version=auth_version+1 WHERE id=? AND auth_version=? AND status IN ('draft','published') AND (status='draft' OR expires_at=0 OR expires_at>?)", t.Title, t.ExpirySeconds, t.ExpiresAt, t.DownloadLimit, t.PasswordHash, t.ID, t.AuthVersion, time.Now().Unix())
-	if err != nil {
-		apiError(w, 500, "Cannot change transfer.")
-		return
-	}
-	changed, err := result.RowsAffected()
-	if err != nil || changed != 1 {
-		apiError(w, 409, "Transfer changed; refresh and retry.")
-		return
-	}
-	if err = tx.Commit(); err != nil {
-		apiError(w, 500, "Cannot change transfer.")
-		return
-	}
-	if err = a.cleanup(); err != nil {
-		a.logger.Error("cleanup failed")
-	}
-	t, err = a.store.transfer(r.Context(), t.ID)
-	if err != nil {
-		apiError(w, 500, "Cannot read transfer.")
+		a.operationError(w, r, "edit_transfer", err)
 		return
 	}
 	a.ownerJSON(w, t)
 }
 
 func (a *App) close(w http.ResponseWriter, r *http.Request, status string) {
-	if err := a.store.closeTransfer(r.Context(), r.PathValue("id"), status); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			notFound(w)
-		} else {
-			apiError(w, 500, "Cannot close transfer.")
-		}
+	if err := a.closeTransfer(r.Context(), userFromContext(r.Context()), r.PathValue("id"), status, adminRequest(r)); err != nil {
+		a.operationError(w, r, "close_transfer", err)
 		return
 	}
-	a.cancelTransfer(r.PathValue("id"))
-	if err := a.cleanup(); err != nil {
-		a.logger.Error("cleanup failed")
-	}
+	a.logger.Info("transfer changed", "operation", status, "actor_id", userFromContext(r.Context()).ID, "transfer_id", r.PathValue("id"), "request_id", r.Context().Value(requestIDKey{}))
 	writeJSON(w, map[string]bool{"ok": true})
 }
 func (a *App) deleteTransfer(w http.ResponseWriter, r *http.Request) { a.close(w, r, "deleted") }
 func (a *App) revokeTransfer(w http.ResponseWriter, r *http.Request) { a.close(w, r, "revoked") }
 func (a *App) qr(w http.ResponseWriter, r *http.Request) {
 	t, err := a.store.transfer(r.Context(), r.PathValue("id"))
-	if err != nil || t.Status != "published" || (t.ExpiresAt > 0 && t.ExpiresAt <= time.Now().Unix()) {
+	if err != nil {
+		a.operationError(w, r, "read_transfer", err)
+		return
+	}
+	if t.Status != "published" || (t.ExpiresAt > 0 && t.ExpiresAt <= time.Now().Unix()) {
 		notFound(w)
 		return
 	}
 	png, err := qrcode.Encode(strings.TrimRight(a.cfg.PublicURL, "/")+"/s/"+t.ShareToken, qrcode.Medium, 384)
 	if err != nil {
-		apiError(w, 500, "Cannot generate QR code.")
+		a.operationError(w, r, "generate_qr", err)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
@@ -500,7 +395,7 @@ func (a *App) qr(w http.ResponseWriter, r *http.Request) {
 func (a *App) publicPage(w http.ResponseWriter, r *http.Request) {
 	t, err := a.store.publicTransfer(r.Context(), r.PathValue("token"))
 	if err != nil {
-		notFound(w)
+		a.downloadOperationError(w, r, "read_public_transfer", err)
 		return
 	}
 	locked := !a.shareAuthenticated(r, t)
@@ -513,7 +408,7 @@ func (a *App) publicPage(w http.ResponseWriter, r *http.Request) {
 func (a *App) unlock(w http.ResponseWriter, r *http.Request) {
 	t, err := a.store.publicTransfer(r.Context(), r.PathValue("token"))
 	if err != nil {
-		notFound(w)
+		a.downloadOperationError(w, r, "read_public_transfer", err)
 		return
 	}
 	if !a.checkCSRF(r, "share:"+t.ID, a.cfg.PublicURL) {
@@ -541,29 +436,15 @@ func (a *App) unlock(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err = a.grantSession(w, "share", t, User{}); err != nil {
-		apiError(w, 503, "Download authorization unavailable.")
+		a.operationError(w, r, "authorize_download", err)
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-func (a *App) health(w http.ResponseWriter, r *http.Request) {
-	if err := a.store.db.PingContext(r.Context()); err != nil {
-		http.Error(w, "unhealthy", 503)
-		return
-	}
-	info, err := a.root.Stat(".")
-	space, spaceErr := freeSpace(a.cfg.DataDir)
-	if err != nil || !info.IsDir() || spaceErr != nil || space < a.cfg.MinFreeSpace {
-		http.Error(w, "unhealthy", 503)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.WriteString(w, "ok\n")
-}
 func (a *App) asset(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if name != "app.js" && name != "style.css" && name != "icon.svg" {
+	if name != "app.js" && name != "hash-worker.js" && name != "style.css" && name != "icon.svg" {
 		notFound(w)
 		return
 	}
@@ -573,7 +454,7 @@ func (a *App) asset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch name {
-	case "app.js":
+	case "app.js", "hash-worker.js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	case "style.css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")

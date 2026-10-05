@@ -17,10 +17,13 @@
     {{if .AdminSurface}}
     <a href="/admin/users" {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>
     <a href="/admin/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a>
+    <a href="/admin/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
+    <a href="/admin/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Account</a>
     <a href="{{.Config.OwnerURL}}/upload">Uploads</a>
     {{else}}
     <a href="/upload" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
     <a href="/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
+    <a href="/account" {{if eq .Page "account"}}aria-current="page"{{end}}>Account</a>
     {{if .User.IsAdmin}}<a href="{{.Config.AdminURL}}/admin/users">Admin</a>{{end}}
     {{end}}
     <button type="button" id="logout" class="quiet">Sign out</button>
@@ -39,13 +42,23 @@
       <button type="submit">Sign in</button>
     </form>
   </section>
+  {{else if eq .Page "account"}}
+  <section class="login panel">
+    <h1>Change password</h1>
+    <form id="password-form">
+      <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>New password<input name="newPassword" type="password" autocomplete="new-password" required minlength="16" maxlength="256"></label>
+      <p class="small muted">Use 16–256 bytes. Changing your password signs out all sessions and stops active uploads.</p>
+      <button type="submit">Change password</button>
+    </form>
+  </section>
   {{else if eq .Page "upload"}}
   <section class="upload-page">
     <h1 id="upload-heading">Upload</h1>
     <div class="panel upload-panel">
       <div id="dropzone" class="dropzone">
         <p>Drop files here</p>
-        <label class="button file-picker">Choose files<input id="file-picker" type="file" multiple></label>
+        <label class="button file-picker">Choose files<input id="file-picker" type="file" multiple disabled></label>
       </div>
       <ul id="selected-files" class="file-list" aria-label="Selected files"></ul>
       <form id="upload-form" class="settings" hidden>
@@ -100,6 +113,7 @@
         <label>Total storage limit (GiB)<input name="storageQuotaGiB" type="number" min="0.000000001" max="1048576" step="any" required></label>
       </div>
       <p class="small muted">Defaults apply to new users and transfers. 0 disables the default user quota, expiry or download limit.</p>
+      <p id="maintenance-status" class="small muted" role="status"></p>
       <div class="row"><button type="submit">Save</button><span id="settings-storage" class="small muted"></span></div>
     </form>
   </section>
@@ -111,7 +125,7 @@
       <h2 id="user-dialog-title">Add user</h2>
       <div id="user-error" role="alert" class="small danger" hidden></div>
       <label>Username<input name="username" autocomplete="off" required maxlength="100" pattern="[A-Za-z0-9_.@\-]+"></label>
-      <label>Password<input name="password" type="password" autocomplete="new-password" maxlength="256" required></label>
+      <label>Password<input name="password" type="password" autocomplete="new-password" minlength="16" maxlength="256" required></label>
       <div>
         <label class="check"><input name="quotaEnabled" type="checkbox">Storage quota</label>
         <div class="inline-fields"><input name="quotaGiB" type="number" min="0.000001" step="any" aria-label="Storage quota in GiB"><span class="unit">GiB</span></div>
@@ -133,6 +147,7 @@
   <dialog id="edit-dialog" aria-labelledby="edit-title">
     <form id="edit-form">
       <h2 id="edit-title">Edit transfer</h2>
+      <div id="edit-error" role="alert" class="small danger" hidden></div>
       <label>Name<input name="title" required maxlength="200"></label>
       <div class="form-grid">
         <div>

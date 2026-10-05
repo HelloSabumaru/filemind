@@ -35,7 +35,7 @@ try {
   await mkdir(local, { recursive: true, mode: 0o700 });
   const buildCode = await run('go', ['build', '-o', binary, './cmd/filemind'], {
     ...process.env,
-    GOTOOLCHAIN: 'local',
+    GOTOOLCHAIN: 'auto',
   });
   if (buildCode !== 0 || stopping) {
     process.exitCode = stopping ? process.exitCode : buildCode;

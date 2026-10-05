@@ -68,7 +68,8 @@ func main() {
 			failures <- s.Serve(&limitedListener{Listener: listeners[i], slots: slots[i], done: make(chan struct{})})
 		}()
 	}
-	go a.Background(ctx)
+	backgroundDone := make(chan struct{})
+	go func() { defer close(backgroundDone); a.Background(ctx) }()
 	logger.Info("FileMind ready")
 	select {
 	case <-ctx.Done():
@@ -85,6 +86,7 @@ func main() {
 			s.Close()
 		}
 	}
+	<-backgroundDone
 }
 
 func safeStartupError(err error) string {
@@ -104,7 +106,11 @@ type httpErrorWriter struct{ logger *slog.Logger }
 
 func (w httpErrorWriter) Write(p []byte) (int, error) {
 	// Raw HTTP diagnostics can include client addresses and panic contents.
-	w.logger.Error("HTTP server error")
+	category := "http_protocol"
+	if strings.Contains(string(p), "panic serving") {
+		category = "handler_panic"
+	}
+	w.logger.Error("HTTP server error", "operation", "serve_http", "category", category)
 	return len(p), nil
 }
 

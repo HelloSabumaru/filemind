@@ -31,17 +31,24 @@
       {{range .Transfer.Files}}
       <li>
         <div class="file-description"><strong>{{.Name}}</strong><span class="small muted">{{bytes .Size}}{{if $.Transfer.DownloadLimit}} · {{.Downloads}} / {{$.Transfer.DownloadLimit}} downloads{{end}}</span></div>
-        {{if or .Deleted (and $.Transfer.DownloadLimit (ge .Downloads $.Transfer.DownloadLimit))}}
+        {{if or .Deleted (not .Uploaded) (and $.Transfer.DownloadLimit (ge .Downloads $.Transfer.DownloadLimit))}}
         <span class="badge">Unavailable</span>
         {{else}}
-        <a class="button secondary download-link" href="/s/{{$.Transfer.ShareToken}}/files/{{.ID}}" download>Download</a>
+        <a class="button secondary download-link" href="/s/{{$.Transfer.ShareToken}}/files/{{.ID}}">Download</a>
         {{end}}
       </li>
       {{end}}
     </ul>
-    <a class="button download-link" href="/s/{{.Transfer.ShareToken}}/archive" download>Download ZIP</a>
+    <a class="button download-link" href="/s/{{.Transfer.ShareToken}}/archive">Download ZIP</a>
     {{end}}
   </section>
 </main>
 </body>
 </html>{{end}}
+
+{{define "download-error"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Download unavailable · FileMind</title><link rel="stylesheet" href="/assets/style.css"></head>
+<body><main class="recipient"><section class="panel"><h1>Download unavailable</h1>
+<p role="alert">{{.Error}}</p>{{if .BackURL}}<a class="button secondary" href="{{.BackURL}}">Return to transfer</a>{{end}}
+<p class="small muted">Request reference: {{.RequestID}}</p></section></main></body></html>{{end}}
