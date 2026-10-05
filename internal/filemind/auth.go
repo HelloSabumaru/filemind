@@ -209,7 +209,7 @@ func (a *App) initializeCredentials(password string) error {
 	var id, bootstrapHash string
 	err = tx.QueryRow("SELECT value FROM settings WHERE key='bootstrap_user'").Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		id = randomID()
+		id = newUserID()
 		bootstrapHash, err = hashPassword(password)
 		if err != nil {
 			return err

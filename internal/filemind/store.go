@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	mathrand "math/rand/v2"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -33,6 +32,7 @@ type Transfer struct {
 	ShareURL         string `json:"shareUrl,omitempty"`
 	Revision         int64  `json:"revision"`
 	OwnerUsername    string `json:"ownerUsername,omitempty"`
+	OwnerID          string `json:"ownerId,omitempty"`
 	Files            []File `json:"files"`
 }
 
@@ -323,7 +323,7 @@ func (s *Store) create(ctx context.Context, user User, input newTransfer, hash s
 	id := randomID()
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
-		title = randomTransferName()
+		title = defaultTransferTitle(input.Files[0].Name, len(input.Files))
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO transfers(id,user_id,title,status,created_at,touched_at,expiry_seconds,download_limit,password_hash) VALUES(?,?,?,'draft',?,?,?,?,?)`, id, user.ID, title, time.Now().Unix(), time.Now().Unix(), expiry, limit, hash)
 	if err != nil {
@@ -338,28 +338,19 @@ func (s *Store) create(ctx context.Context, user User, input newTransfer, hash s
 	return id, tx.Commit()
 }
 
-func randomTransferName() string {
-	adjectives := [...]string{
-		"Amber", "Autumn", "Azure", "Blue", "Bold", "Bright", "Calm", "Clear",
-		"Cloudy", "Coral", "Cosmic", "Cozy", "Crimson", "Dawn", "Deep", "Distant",
-		"Dreamy", "Dusky", "Early", "Emerald", "Evening", "Frosty", "Gentle", "Golden",
-		"Grand", "Green", "Happy", "Hidden", "Indigo", "Ivory", "Jade", "Kind",
-		"Late", "Little", "Lively", "Lucky", "Lunar", "Mellow", "Misty", "Noble",
-		"Orange", "Pale", "Peaceful", "Quiet", "Radiant", "Red", "Rocky", "Rosy",
-		"Royal", "Ruby", "Sandy", "Scarlet", "Silent", "Silver", "Snowy", "Soft",
-		"Solar", "Spring", "Still", "Summer", "Sunny", "Swift", "Warm", "Wild",
+func defaultTransferTitle(filename string, count int) string {
+	suffix := ""
+	if count > 1 {
+		suffix = fmt.Sprintf(" + %d more", count-1)
 	}
-	nouns := [...]string{
-		"Acorn", "Badger", "Bay", "Bear", "Birch", "Bloom", "Breeze", "Brook",
-		"Canyon", "Cedar", "Cherry", "Cloud", "Comet", "Cove", "Crane", "Creek",
-		"Deer", "Delta", "Dove", "Dune", "Eagle", "Elm", "Falcon", "Fern",
-		"Finch", "Forest", "Fox", "Garden", "Glen", "Grove", "Harbor", "Hawk",
-		"Heron", "Hill", "Island", "Lake", "Leaf", "Lily", "Lotus", "Maple",
-		"Meadow", "Moon", "Moss", "Mountain", "Oak", "Ocean", "Otter", "Owl",
-		"Pebble", "Pine", "Raven", "Reef", "River", "Robin", "Shore", "Sky",
-		"Sparrow", "Star", "Stone", "Stream", "Swan", "Valley", "Wave", "Willow",
+	if len(filename)+len(suffix) > 200 {
+		filename = filename[:200-len(suffix)-len("…")]
+		for !utf8.ValidString(filename) {
+			filename = filename[:len(filename)-1]
+		}
+		filename += "…"
 	}
-	return adjectives[mathrand.IntN(len(adjectives))] + " " + nouns[mathrand.IntN(len(nouns))]
+	return filename + suffix
 }
 
 func randomID() string {

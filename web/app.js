@@ -13,11 +13,25 @@ const bytes = (n) => {
   }
   return "Large";
 };
+let noticeTimer, noticeHideTimer;
+function hideNotice() {
+  clearTimeout(noticeTimer);
+  clearTimeout(noticeHideTimer);
+  const node = $("#notice");
+  node.hidden = true;
+  node.textContent = "";
+  node.classList.remove("dismissing");
+}
 function notice(message, error = false) {
+  hideNotice();
   const n = $("#notice");
   n.textContent = message;
   n.classList.toggle("error", error);
   n.hidden = false;
+  noticeTimer = setTimeout(() => {
+    n.classList.add("dismissing");
+    noticeHideTimer = setTimeout(hideNotice, 250);
+  }, 4000);
 }
 function fail(error) {
   notice(error.message || "Something went wrong. Please retry.", true);
@@ -289,6 +303,7 @@ async function uploadPage() {
       return;
     }
     chosen = selected;
+    if (!draft) form.elements.title.placeholder = chosen[0].name + (chosen.length > 1 ? ` + ${chosen.length - 1} more` : "");
     form.hidden = false;
     renderFiles();
   }
@@ -349,7 +364,7 @@ async function uploadPage() {
         fileMap.set(serverFile.id,file);
       }
       for (const f of draft.files) states.set(f.id, { name: f.name, size: f.size, percent: f.uploaded ? 100 : 0, label: f.uploaded ? "Uploaded" : "Queued" });
-      $("#notice").hidden = true;
+      hideNotice();
       controls(true);
       $("#resume-draft").hidden = true;
       renderFiles();
@@ -405,7 +420,7 @@ async function uploadPage() {
       $("#selected-files").hidden = true;
       history.replaceState(null, "", "/upload");
       $("#upload-heading").textContent = "Share";
-      $("#notice").hidden = true;
+      hideNotice();
     } catch (e) {
       if (job) {
         const interrupted = job;
@@ -476,9 +491,19 @@ async function transfersPage() {
       const card = el("article", "transfer-card"), heading = el("div", "row");
       heading.append(el("h2", "", t.title), el("span", "badge", t.status));
       card.append(heading);
+      if (t.files.length > 1 || (t.files.length === 1 && t.files[0].name !== t.title)) {
+        const names = t.files.slice(0, 3).map(file => file.name).join(" · ");
+        card.append(el("p", "transfer-filenames small muted", names + (t.files.length > 3 ? ` · + ${t.files.length - 3} more` : "")));
+      }
       const meta = el("div", "transfer-meta");
       meta.append(el("span", "", `${t.files.length} file${t.files.length === 1 ? "" : "s"} \xB7 ${bytes(t.files.reduce((n, f) => n + f.size, 0))}`));
-      if (adminSurface) meta.append(el("span", "", `Owner: ${t.ownerUsername}`));
+      if (adminSurface) {
+        const owner = el("span", "", "Owner: ");
+        const link = el("a", "owner-link", t.ownerUsername);
+        link.href = `/admin/users#user-${encodeURIComponent(t.ownerId)}`;
+        owner.append(link);
+        meta.append(owner);
+      }
       if (t.expiresAt) meta.append(el("span", "", `Expires ${time(t.expiresAt)}`));
       if (t.downloadLimit) meta.append(el("span", "", `${t.downloadLimit} downloads per file`));
       if (t.passwordRequired) meta.append(el("span", "", "Password protected"));
@@ -516,7 +541,8 @@ async function transfersPage() {
         $("#edit-error").hidden = true;
         form.elements.title.value = t.title;
         form.elements.expiryEnabled.checked = (t.status === "draft" ? t.expirySeconds : t.expiresAt) > 0;
-        form.elements.expiryHours.value = t.status === "draft" ? t.expirySeconds / 3600 || 24 : t.expiresAt ? Math.max(1e-3, (t.expiresAt - Date.now() / 1e3) / 3600) : 24;
+        const hours = t.status === "draft" ? t.expirySeconds / 3600 || 24 : t.expiresAt ? (t.expiresAt - Date.now() / 1e3) / 3600 : 24;
+        form.elements.expiryHours.value = Math.max(0.01, hours).toFixed(2);
         form.elements.limitEnabled.checked = t.downloadLimit > 0;
         form.elements.downloadLimit.value = t.downloadLimit || 1;
         form.elements.passwordAction.value = "keep";
@@ -590,6 +616,18 @@ async function transfersPage() {
 async function usersPage() {
   const container = $("#users"), dialog = $("#user-dialog"), form = $("#user-form");
   let editing = null, defaults;
+  let highlighted, highlightTimer;
+  function highlightUser() {
+    clearTimeout(highlightTimer);
+    highlighted?.classList.remove("user-highlight");
+    if (!location.hash.startsWith("#user-")) return;
+    highlighted = document.getElementById(location.hash.slice(1));
+    if (!highlighted) { notice("This user is no longer available.", true); return; }
+    highlighted.classList.add("user-highlight");
+    highlighted.focus({preventScroll: true});
+    highlighted.scrollIntoView({block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
+    highlightTimer = setTimeout(() => highlighted.classList.remove("user-highlight"), 1000);
+  }
   function edit(user = null) {
     editing = user;
     form.reset();
@@ -611,6 +649,9 @@ async function usersPage() {
     container.replaceChildren();
     for (const user of users) {
       const card = el("article", "transfer-card"), heading = el("div", "row");
+      card.id = `user-${user.id}`;
+      card.dataset.userId = user.id;
+      card.tabIndex = -1;
       heading.append(el("h2", "", user.username));
       if (user.isAdmin || user.disabled) heading.append(el("span", "badge", user.isAdmin ? "Admin" : "Disabled"));
       card.append(heading);
@@ -671,6 +712,8 @@ async function usersPage() {
   $("#close-user").addEventListener("click", () => dialog.close());
   $("#new-user").addEventListener("click", () => { if (defaults) edit(); });
   await load();
+  window.addEventListener("hashchange", highlightUser);
+  highlightUser();
 }
 async function settingsPage() {
   const form = $("#settings-form");

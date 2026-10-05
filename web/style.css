@@ -168,6 +168,7 @@ main { max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; }
 .search { width: 320px; max-width: 100%; }
 .transfer-card { margin-bottom: .75rem; padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .transfer-card h2 { margin-bottom: .3rem; overflow-wrap: anywhere; }
+.transfer-filenames { margin: .25rem 0 .5rem; overflow-wrap: anywhere; }
 .transfer-meta { display: flex; flex-wrap: wrap; gap: .3rem 1rem; color: var(--muted); font-size: .8rem; }
 .transfer-card details { margin-top: .75rem; }
 summary { cursor: pointer; color: var(--muted); font-size: .8rem; }
@@ -185,8 +186,14 @@ dialog .actions { margin-top: 0; }
 dialog .row h2 { margin-bottom: 0; }
 .qr-dialog { width: min(340px, calc(100% - 2rem)); }
 .qr-dialog img { display: block; width: min(256px, 100%); height: auto; margin: .75rem auto 0; background: #fff; }
-#notice { margin-bottom: 1rem; padding: .65rem .8rem; border: 1px solid var(--border); border-radius: 6px; background: var(--soft); font-size: .875rem; overflow-wrap: anywhere; }
+#notice { position: fixed; right: 1rem; bottom: max(1rem, env(safe-area-inset-bottom)); z-index: 1000; max-width: min(26rem, calc(100% - 2rem)); padding: .8rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 4px 20px #0002; font-size: .875rem; overflow-wrap: anywhere; pointer-events: none; opacity: 1; transform: translateY(0); transition: opacity .25s ease, transform .25s ease; }
+#notice.dismissing { opacity: 0; transform: translateY(6px); }
 #notice.error { color: var(--danger); }
+.owner-link { color: inherit; text-underline-offset: 3px; }
+.user-highlight { border-color: var(--focus); background: var(--soft); box-shadow: 0 0 0 2px var(--focus); }
+@media (prefers-reduced-motion: reduce) {
+  #notice { transition: none; }
+}
 [hidden] { display: none !important; }
 @media (max-width: 640px) {
   .topbar { padding: .75rem 1rem; gap: .5rem; }

@@ -74,7 +74,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 // Archive without dropping transfer history or foreign-key references. Rename
 // the tombstone so the username and the active-account slot can be reused.
 func (a *App) archiveAccount(ctx context.Context, actor User, id string) error {
-	if !validID(id) {
+	if !validUserID(id) {
 		return sql.ErrNoRows
 	}
 	a.uploadMu.Lock()

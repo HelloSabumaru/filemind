@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type User struct {
@@ -20,6 +22,13 @@ type User struct {
 }
 
 type userContextKey struct{}
+
+func newUserID() string { return uuid.NewString() }
+
+func validUserID(value string) bool {
+	id, err := uuid.Parse(value)
+	return err == nil && id.String() == value && id.Version() == 4 && id.Variant() == uuid.RFC4122
+}
 
 func userFromContext(ctx context.Context) User {
 	user, _ := ctx.Value(userContextKey{}).(User)
@@ -148,7 +157,7 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 409, "Account limit reached.")
 		return
 	}
-	user := User{ID: randomID(), Username: input.Username, StorageQuota: quota}
+	user := User{ID: newUserID(), Username: input.Username, StorageQuota: quota}
 	if _, err = tx.ExecContext(r.Context(), "INSERT INTO users(id,username,password_hash,storage_quota) VALUES(?,?,?,?)", user.ID, user.Username, hash, user.StorageQuota); err != nil {
 		a.operationError(w, r, "create_account", err)
 		return
@@ -175,7 +184,7 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	id := r.PathValue("id")
-	if !validID(id) {
+	if !validUserID(id) {
 		apiError(w, 404, "Account unavailable.")
 		return
 	}
@@ -299,6 +308,6 @@ func (a *App) initializeDemoUser() error {
 	if err != nil {
 		return err
 	}
-	_, err = a.store.db.Exec("INSERT INTO users(id,username,password_hash,storage_quota) VALUES(?,'user',?,?)", randomID(), hash, a.settings().DefaultUserQuota)
+	_, err = a.store.db.Exec("INSERT INTO users(id,username,password_hash,storage_quota) VALUES(?,'user',?,?)", newUserID(), hash, a.settings().DefaultUserQuota)
 	return err
 }

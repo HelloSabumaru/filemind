@@ -340,6 +340,9 @@ func (a *App) transferList(w http.ResponseWriter, r *http.Request, userID string
 		return
 	}
 	for i := range transfers {
+		if adminRequest(r) {
+			transfers[i].OwnerID = transfers[i].UserID
+		}
 		if transfers[i].Status == "published" {
 			transfers[i].ShareURL = strings.TrimRight(a.cfg.PublicURL, "/") + "/s/" + transfers[i].ShareToken
 		}
@@ -351,6 +354,9 @@ func (a *App) getTransfer(w http.ResponseWriter, r *http.Request) {
 	if e != nil {
 		a.operationError(w, r, "read_transfer", e)
 		return
+	}
+	if adminRequest(r) {
+		t.OwnerID = t.UserID
 	}
 	a.ownerJSON(w, t)
 }

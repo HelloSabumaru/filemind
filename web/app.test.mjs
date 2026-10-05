@@ -1,11 +1,11 @@
-import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 
@@ -197,7 +197,49 @@ test("upload hashing spans multiple chunks and the browser receives exact conten
   assert.equal(digest(await readFile(await download.path())),digest(payload));
   const transfers = await api(page,"/api/transfers");
   const transfer = transfers.body.find(item => item.files.some(file => file.name === "browser-integrity.bin"));
+  assert.equal(transfer.title,"browser-integrity.bin");
   assert.equal(transfer.files[0].sha256,digest(payload));
+});
+
+test("filename titles identify batches and custom titles retain a visible filename preview", async t => {
+  const page = await login(t);
+  const names = ["invoice.pdf", "notes.txt", "photo.png", "data.csv"];
+  await page.locator("#file-picker").setInputFiles(names.map(name => ({name,mimeType:"application/octet-stream",buffer:Buffer.from(name)})));
+  assert.equal(await page.locator("#upload-form [name=title]").getAttribute("placeholder"),"invoice.pdf + 3 more");
+  await page.getByRole("button",{name:"Upload",exact:true}).click();
+  const share = await publishedResult(page);
+  const batch = (await api(page,"/api/transfers")).body.find(item => item.shareUrl === share);
+  assert.equal(batch.title,"invoice.pdf + 3 more");
+  assert.deepEqual(batch.files.map(file => file.name),names);
+  const recipient = await browser.newPage(); t.after(() => recipient.close());
+  await recipient.goto(share);
+  await recipient.getByRole("heading",{name:"invoice.pdf + 3 more",exact:true}).waitFor();
+  assert.deepEqual(await recipient.locator(".file-description strong").allTextContents(),names);
+  await page.goto(`${ownerURL}/upload`); await readyUpload(page);
+  await select(page,"meeting.txt",Buffer.from("meeting notes"));
+  await page.locator("#upload-form [name=title]").fill("Team meeting");
+  await select(page,"minutes.txt",Buffer.from("meeting minutes"));
+  assert.equal(await page.locator("#upload-form [name=title]").inputValue(),"Team meeting");
+  assert.equal(await page.locator("#upload-form [name=title]").getAttribute("placeholder"),"minutes.txt");
+  await page.getByRole("button",{name:"Upload",exact:true}).click();
+  await publishedResult(page);
+  await page.goto(`${ownerURL}/transfers`);
+  const card = page.locator(".transfer-card").filter({has:page.getByRole("heading",{name:"invoice.pdf + 3 more",exact:true})});
+  await card.waitFor();
+  const preview = card.locator(".transfer-filenames");
+  assert.equal(await preview.isVisible(),true);
+  assert.equal(await preview.textContent(),"invoice.pdf · notes.txt · photo.png · + 1 more");
+  await card.getByText("Files",{exact:true}).click();
+  await card.locator(".file-list").getByText("data.csv",{exact:true}).waitFor();
+  const custom = page.locator(".transfer-card").filter({has:page.getByRole("heading",{name:"Team meeting",exact:true})});
+  assert.equal(await custom.locator(".transfer-filenames").textContent(),"minutes.txt");
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"filename preview overflows on mobile");
+  const admin = await login(t,true);
+  await admin.goto(`${adminURL}/admin/transfers`);
+  const adminCard = admin.locator(".transfer-card").filter({has:admin.getByRole("heading",{name:"invoice.pdf + 3 more",exact:true})});
+  await adminCard.waitFor();
+  assert.equal(await adminCard.locator(".transfer-filenames").textContent(),"invoice.pdf · notes.txt · photo.png · + 1 more");
 });
 
 test("resume rejects a different same-name same-size file before changing saved bytes", async t => {
@@ -239,6 +281,7 @@ test("unrelated edits preserve expiry and a rejected edit stays open", async t =
   await page.goto(`${ownerURL}/transfers`);
   const card = page.locator(".transfer-card").filter({hasText:"edit-expiry.txt"});
   await card.getByRole("button",{name:"Edit",exact:true}).click();
+  assert.match(await page.locator("#edit-form [name=expiryHours]").inputValue(),/^\d+\.\d{2}$/);
   await page.locator("#edit-form [name=title]").fill("Only title changed");
   await delay(1100);
   await page.locator("#edit-form").getByRole("button",{name:"Save",exact:true}).click();
@@ -367,6 +410,81 @@ test("date format defaults to dd/mm/yyyy and persists across personal and admin 
     await recipient.goto(share);
     await recipient.locator("time[data-timestamp]").filter({hasText:dates["dd/mm/yyyy"]}).waitFor();
   } finally { assert.equal((await api(page,"/api/preferences","PUT",{dateFormat:"dd/mm/yyyy"})).status,200); }
+});
+
+test("copy notifications float without moving content and fade after a fresh timeout", async t => {
+  const page = await login(t);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {origin:ownerURL});
+  await select(page,"toast-layout.txt",Buffer.from("toast"));
+  await page.getByRole("button",{name:"Upload",exact:true}).click();
+  await publishedResult(page);
+  await page.setViewportSize({width:390,height:844});
+  await page.clock.install();
+  const content = page.locator("#share-result");
+  const before = await content.boundingBox();
+  const copy = page.getByRole("button",{name:"Copy link",exact:true});
+  const toast = page.locator("#notice");
+  await copy.click();
+  await page.getByText("Link copied.",{exact:true}).waitFor();
+  assert.deepEqual(await content.boundingBox(),before);
+  const box = await toast.boundingBox();
+  assert.ok(box.x >= 0 && box.x + box.width <= 390 && box.y + box.height <= 844);
+  await page.clock.runFor(3500);
+  const repeated = page.evaluate(() => new Promise(resolve => {
+    const observer = new MutationObserver(() => { observer.disconnect(); resolve(); });
+    observer.observe(document.querySelector("#notice"), {childList:true});
+  }));
+  await copy.click();
+  await repeated;
+  await page.clock.runFor(1000);
+  assert.equal(await toast.isVisible(),true,"previous notification timer dismissed the new one");
+  await page.clock.runFor(3050);
+  assert.equal(await toast.evaluate(node => node.classList.contains("dismissing")),true);
+  await page.clock.runFor(300);
+  assert.equal(await toast.isVisible(),false);
+  assert.deepEqual(await content.boundingBox(),before);
+});
+
+test("admin transfer owners link by UUID to a briefly highlighted user", async t => {
+  const owner = await login(t);
+  await select(owner,"owner-link.txt",Buffer.from("user deep link"));
+  await owner.getByRole("button",{name:"Upload",exact:true}).click();
+  await publishedResult(owner);
+  const admin = await login(t,true);
+  const users = (await api(admin,"/admin/api/users")).body;
+  const user = users.find(item => item.username === "user");
+  assert.match(user.id,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  await admin.goto(`${adminURL}/admin/transfers`);
+  const card = admin.locator(".transfer-card").filter({hasText:"owner-link.txt"});
+  const link = card.getByRole("link",{name:"user",exact:true});
+  assert.equal(await link.getAttribute("href"),`/admin/users#user-${user.id}`);
+  // Hold the target request so the clock is installed before highlighting starts.
+  await admin.route("**/admin/api/users",async route => {
+    await admin.clock.install();
+    await route.continue();
+  });
+  await link.click();
+  const target = admin.locator(`[data-user-id="${user.id}"]`);
+  await admin.locator(`[data-user-id="${user.id}"].user-highlight`).waitFor();
+  assert.equal(admin.url(),`${adminURL}/admin/users#user-${user.id}`);
+  assert.equal(await target.getByRole("heading",{name:"user",exact:true}).count(),1);
+  assert.equal(await target.evaluate(node => document.activeElement === node),true);
+  assert.equal(await admin.locator(".user-highlight").count(),1);
+  await admin.clock.runFor(1300);
+  assert.equal(await target.evaluate(node => node.classList.contains("user-highlight")),false);
+});
+
+test("short draft expiry displays two decimals without changing expiry on an unrelated edit", async t => {
+  const page = await login(t);
+  const draft = await partialDraft(page,"short-expiry.txt",Buffer.from("short"),0);
+  assert.equal((await api(page,`/api/transfers/${draft.id}`,"PATCH",{revision:draft.revision,expirySeconds:10})).status,200);
+  await page.goto(`${ownerURL}/transfers`);
+  await page.locator(".transfer-card").filter({hasText:"short-expiry.txt"}).getByRole("button",{name:"Edit",exact:true}).click();
+  assert.equal(await page.locator("#edit-form [name=expiryHours]").inputValue(),"0.01");
+  await page.locator("#edit-form [name=title]").fill("Short draft renamed");
+  await page.locator("#edit-form").getByRole("button",{name:"Save",exact:true}).click();
+  await page.locator("#edit-dialog").waitFor({state:"hidden"});
+  assert.equal((await api(page,`/api/transfers/${draft.id}`)).body.expirySeconds,10);
 });
 
 test("an abrupt process crash preserves links and unfinished uploads", {timeout:60000}, async t => {
