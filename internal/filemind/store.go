@@ -18,6 +18,7 @@ import (
 
 type Transfer struct {
 	ID               string `json:"id"`
+	UserID           string `json:"-"`
 	Title            string `json:"title"`
 	Status           string `json:"status"`
 	CreatedAt        int64  `json:"createdAt"`
@@ -53,14 +54,19 @@ func openStore(filename string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	var version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || (version != 0 && version != 1) {
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || (version != 0 && version != 2) {
 		db.Close()
-		return nil, errors.New("unsupported database schema")
+		return nil, errors.New("unsupported database schema; this pre-release requires an empty data directory")
 	}
 	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users (
+ id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+ password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
+ disabled INTEGER NOT NULL DEFAULT 0, storage_quota INTEGER NOT NULL DEFAULT 0 CHECK(storage_quota>=0),
+ auth_version INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS transfers (
- id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, touched_at INTEGER NOT NULL,
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), title TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, touched_at INTEGER NOT NULL,
  published_at INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0, expiry_seconds INTEGER NOT NULL,
  download_limit INTEGER NOT NULL, password_hash TEXT NOT NULL DEFAULT '', auth_version INTEGER NOT NULL DEFAULT 1,
  share_token TEXT UNIQUE, closed_at INTEGER NOT NULL DEFAULT 0);
@@ -69,13 +75,15 @@ CREATE TABLE IF NOT EXISTS files (
  size INTEGER NOT NULL CHECK(size>=0), started INTEGER NOT NULL DEFAULT 0, uploaded INTEGER NOT NULL DEFAULT 0,
  downloads INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS files_transfer ON files(transfer_id);
+CREATE INDEX IF NOT EXISTS transfers_user ON transfers(user_id);
 CREATE TABLE IF NOT EXISTS sessions (
- token_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, transfer_id TEXT NOT NULL DEFAULT '', auth_version INTEGER NOT NULL DEFAULT 0,
+ token_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, user_id TEXT REFERENCES users(id), transfer_id TEXT NOT NULL DEFAULT '', auth_version INTEGER NOT NULL DEFAULT 0,
  expires_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS reservations (
  id TEXT NOT NULL, file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE, PRIMARY KEY(id,file_id));
-PRAGMA user_version=1;`)
+PRAGMA user_version=2;`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -83,11 +91,11 @@ PRAGMA user_version=1;`)
 	return &Store{db}, nil
 }
 
-const transferColumns = `id,title,status,created_at,published_at,expires_at,expiry_seconds,download_limit,password_hash,auth_version,COALESCE(share_token,'')`
+const transferColumns = `id,user_id,title,status,created_at,published_at,expires_at,expiry_seconds,download_limit,password_hash,auth_version,COALESCE(share_token,'')`
 
 func scanTransfer(row interface{ Scan(...any) error }) (Transfer, error) {
 	var t Transfer
-	err := row.Scan(&t.ID, &t.Title, &t.Status, &t.CreatedAt, &t.PublishedAt, &t.ExpiresAt, &t.ExpirySeconds, &t.DownloadLimit, &t.PasswordHash, &t.AuthVersion, &t.ShareToken)
+	err := row.Scan(&t.ID, &t.UserID, &t.Title, &t.Status, &t.CreatedAt, &t.PublishedAt, &t.ExpiresAt, &t.ExpirySeconds, &t.DownloadLimit, &t.PasswordHash, &t.AuthVersion, &t.ShareToken)
 	t.PasswordRequired = t.PasswordHash != ""
 	return t, err
 }
@@ -150,7 +158,7 @@ func (s *Store) putSetting(key, value string) error {
 
 func (s *Store) list(ctx context.Context, search string, offset int) ([]Transfer, error) {
 	search = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(search)
-	rows, err := s.db.QueryContext(ctx, `SELECT `+transferColumns+` FROM transfers WHERE title LIKE ? ESCAPE '\' OR id IN (SELECT transfer_id FROM files WHERE name LIKE ? ESCAPE '\') ORDER BY created_at DESC,rowid DESC LIMIT 50 OFFSET ?`, "%"+search+"%", "%"+search+"%", offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+transferColumns+` FROM transfers WHERE user_id=? AND (title LIKE ? ESCAPE '\' OR id IN (SELECT transfer_id FROM files WHERE name LIKE ? ESCAPE '\')) ORDER BY created_at DESC,rowid DESC LIMIT 50 OFFSET ?`, userFromContext(ctx).ID, "%"+search+"%", "%"+search+"%", offset)
 	if err != nil {
 		return nil, err
 	}
@@ -188,8 +196,8 @@ type newTransfer struct {
 	} `json:"files"`
 }
 
-func (s *Store) create(ctx context.Context, input newTransfer, hash string, cfg Config) (string, error) {
-	expiry, limit := int64(cfg.DefaultExpiry.Seconds()), cfg.DefaultDownloadLimit
+func (s *Store) create(ctx context.Context, input newTransfer, hash string, settings Settings) (string, error) {
+	expiry, limit := settings.ExpirySeconds, settings.DownloadLimit
 	if input.ExpirySeconds != nil {
 		expiry = *input.ExpirySeconds
 	}
@@ -202,7 +210,7 @@ func (s *Store) create(ctx context.Context, input newTransfer, hash string, cfg 
 	var total int64
 	seen := map[string]map[int64]bool{}
 	for _, f := range input.Files {
-		if !validFilename(f.Name) || f.Size < 0 || f.Size > cfg.MaxFileSize || f.Size > cfg.MaxTransferSize-total {
+		if !validFilename(f.Name) || f.Size < 0 || f.Size > settings.MaxFileSize || f.Size > settings.MaxTransferSize-total {
 			return "", errors.New("invalid filename or upload exceeds size limits")
 		}
 		if seen[f.Name] == nil {
@@ -219,6 +227,12 @@ func (s *Store) create(ctx context.Context, input newTransfer, hash string, cfg 
 		return "", err
 	}
 	defer tx.Rollback()
+	user := userFromContext(ctx)
+	var quota, version int64
+	var disabled bool
+	if err = tx.QueryRowContext(ctx, "SELECT storage_quota,auth_version,disabled FROM users WHERE id=?", user.ID).Scan(&quota, &version, &disabled); err != nil || disabled || version != user.AuthVersion {
+		return "", errors.New("account unavailable; sign in again")
+	}
 	var used, count int64
 	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(size),0) FROM files WHERE deleted=0").Scan(&used); err != nil {
 		return "", err
@@ -226,15 +240,24 @@ func (s *Store) create(ctx context.Context, input newTransfer, hash string, cfg 
 	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM transfers WHERE status IN ('draft','published','revoked')").Scan(&count); err != nil {
 		return "", err
 	}
-	if total > cfg.StorageQuota-used || count >= 1000 {
+	if total > settings.StorageQuota-used || count >= 1000 {
 		return "", errors.New("storage quota or transfer limit reached")
+	}
+	if quota > 0 {
+		var userUsed int64
+		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(f.size),0) FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE t.user_id=? AND f.deleted=0", user.ID).Scan(&userUsed); err != nil {
+			return "", err
+		}
+		if total > quota-userUsed {
+			return "", errors.New("account storage quota reached")
+		}
 	}
 	id := randomID()
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
 		title = randomTransferName()
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO transfers(id,title,status,created_at,touched_at,expiry_seconds,download_limit,password_hash) VALUES(?,?,'draft',?,?,?,?,?)`, id, title, time.Now().Unix(), time.Now().Unix(), expiry, limit, hash)
+	_, err = tx.ExecContext(ctx, `INSERT INTO transfers(id,user_id,title,status,created_at,touched_at,expiry_seconds,download_limit,password_hash) VALUES(?,?,?,'draft',?,?,?,?,?)`, id, user.ID, title, time.Now().Unix(), time.Now().Unix(), expiry, limit, hash)
 	if err != nil {
 		return "", err
 	}

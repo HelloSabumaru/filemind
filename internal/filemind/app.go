@@ -12,30 +12,33 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 type App struct {
-	cfg           Config
-	store         *Store
-	root          *os.Root
-	lock          *os.File
-	csrfKey       []byte
-	ownerHash     string
-	templates     *template.Template
-	logger        *slog.Logger
-	uploadHandler http.Handler
-	limiter       *limiter
-	ownerLimiter  *limiter
-	hashSlots     chan struct{}
-	downloadSlots chan struct{}
-	activeMu      sync.Mutex
-	active        map[string]map[string]context.CancelFunc
-	uploadMu      sync.Mutex
-	cleanupMu     sync.Mutex
-	spaceMu       sync.Mutex
-	writeReserved int64
+	cfg            Config
+	store          *Store
+	root           *os.Root
+	lock           *os.File
+	csrfKey        []byte
+	loginDummyHash string
+	templates      *template.Template
+	logger         *slog.Logger
+	uploadHandler  http.Handler
+	limiter        *limiter
+	ownerLimiter   *limiter
+	hashSlots      chan struct{}
+	downloadSlots  chan struct{}
+	activeMu       sync.Mutex
+	active         map[string]map[string]context.CancelFunc
+	uploadMu       sync.Mutex
+	cleanupMu      sync.Mutex
+	spaceMu        sync.Mutex
+	writeReserved  int64
+	settingsMu     sync.Mutex
+	preferences    atomic.Pointer[Settings]
 }
 
 func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
@@ -52,7 +55,10 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	}
 	password := strings.TrimRight(string(passwordBytes), "\r\n")
 	clear(passwordBytes)
-	if len(password) < 16 || len(password) > 256 {
+	if password == "" || len(password) > 256 {
+		return nil, errors.New("owner password must contain 1–256 bytes")
+	}
+	if !cfg.Development && len(password) < 16 {
 		return nil, errors.New("owner password must contain 16–256 bytes")
 	}
 	if err = os.MkdirAll(filepath.Join(cfg.DataDir, "uploads"), 0700); err != nil {
@@ -86,8 +92,16 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = a.initializeSettings(); err != nil {
+		return nil, err
+	}
 	if err = a.initializeCredentials(password); err != nil {
 		return nil, err
+	}
+	if cfg.Demo {
+		if err = a.initializeDemoUser(); err != nil {
+			return nil, err
+		}
 	}
 	key, e := a.store.setting("csrf_key")
 	if errors.Is(e, sql.ErrNoRows) {

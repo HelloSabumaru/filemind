@@ -32,7 +32,8 @@ func (s uploadStore) NewUpload(ctx context.Context, info handler.FileInfo) (hand
 	var started, deleted bool
 	var state string
 	var size int64
-	err = tx.QueryRowContext(ctx, "SELECT f.started,f.deleted,f.size,t.status FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE f.id=?", info.ID).Scan(&started, &deleted, &size, &state)
+	user := userFromContext(ctx)
+	err = tx.QueryRowContext(ctx, "SELECT f.started,f.deleted,f.size,t.status FROM files f JOIN transfers t ON t.id=f.transfer_id JOIN users u ON u.id=t.user_id WHERE f.id=? AND u.id=? AND u.disabled=0 AND u.auth_version=?", info.ID, user.ID, user.AuthVersion).Scan(&started, &deleted, &size, &state)
 	if err != nil || started || deleted || state != "draft" || info.Size != size {
 		return nil, handler.NewError("UPLOAD_UNAVAILABLE", "Upload unavailable", 409)
 	}
@@ -76,6 +77,12 @@ func (s uploadStore) NewUpload(ctx context.Context, info handler.FileInfo) (hand
 }
 func (s uploadStore) GetUpload(ctx context.Context, id string) (handler.Upload, error) {
 	if !validID(id) {
+		return nil, handler.ErrNotFound
+	}
+	user := userFromContext(ctx)
+	var found int
+	err := s.app.store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM files f JOIN transfers t ON t.id=f.transfer_id JOIN users u ON u.id=t.user_id WHERE f.id=? AND f.started=1 AND f.deleted=0 AND t.status='draft' AND u.id=? AND u.disabled=0 AND u.auth_version=?", id, user.ID, user.AuthVersion).Scan(&found)
+	if err != nil || found != 1 {
 		return nil, handler.ErrNotFound
 	}
 	u, err := s.base.GetUpload(ctx, id)
@@ -125,7 +132,8 @@ func (a *App) initializeUploads() error {
 	composer.UseCore(uploadStore{a, base})
 	memorylocker.New().UseIn(composer)
 	h, err := handler.NewHandler(handler.Config{
-		StoreComposer: composer, BasePath: strings.TrimRight(a.cfg.OwnerURL, "/") + "/admin/uploads/", MaxSize: a.cfg.MaxFileSize, DisableDownload: true, DisableTermination: true, DisableConcatenation: true,
+		// Drafts reserve validated sizes, so older drafts can finish after size limits change.
+		StoreComposer: composer, BasePath: strings.TrimRight(a.cfg.OwnerURL, "/") + "/uploads/", DisableDownload: true, DisableTermination: true, DisableConcatenation: true,
 		Cors: &handler.CorsConfig{Disable: true}, NetworkTimeout: 60 * time.Second,
 		Logger: expslog.New(expslog.NewTextHandler(io.Discard, nil)),
 		PreUploadCreateCallback: func(event handler.HookEvent) (handler.HTTPResponse, handler.FileInfoChanges, error) {
@@ -136,7 +144,8 @@ func (a *App) initializeUploads() error {
 			var name, state string
 			var size int64
 			var deleted bool
-			err := a.store.db.QueryRowContext(event.Context, "SELECT f.name,f.size,f.deleted,t.status FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE f.id=?", id).Scan(&name, &size, &deleted, &state)
+			user := userFromContext(event.Context)
+			err := a.store.db.QueryRowContext(event.Context, "SELECT f.name,f.size,f.deleted,t.status FROM files f JOIN transfers t ON t.id=f.transfer_id JOIN users u ON u.id=t.user_id WHERE f.id=? AND u.id=? AND u.disabled=0 AND u.auth_version=?", id, user.ID, user.AuthVersion).Scan(&name, &size, &deleted, &state)
 			if err != nil || deleted || state != "draft" || size != event.Upload.Size {
 				return handler.HTTPResponse{}, handler.FileInfoChanges{}, handler.NewError("INVALID_UPLOAD", "Upload unavailable", 409)
 			}
@@ -152,14 +161,20 @@ func (a *App) initializeUploads() error {
 			if err != nil || info.Size() != event.Upload.Size {
 				return handler.HTTPResponse{}, errors.New("upload length mismatch")
 			}
-			_, err = a.store.db.ExecContext(event.Context, "UPDATE files SET uploaded=1 WHERE id=? AND deleted=0", event.Upload.ID)
+			user := userFromContext(event.Context)
+			result, err := a.store.db.ExecContext(event.Context, "UPDATE files SET uploaded=1 WHERE id=? AND deleted=0 AND transfer_id IN (SELECT t.id FROM transfers t JOIN users u ON u.id=t.user_id WHERE t.status='draft' AND u.id=? AND u.disabled=0 AND u.auth_version=?)", event.Upload.ID, user.ID, user.AuthVersion)
+			if err == nil {
+				if changed, e := result.RowsAffected(); e != nil || changed != 1 {
+					err = errors.New("upload unavailable")
+				}
+			}
 			return handler.HTTPResponse{}, err
 		},
 	})
 	if err != nil {
 		return err
 	}
-	a.uploadHandler = http.StripPrefix("/admin/uploads/", h)
+	a.uploadHandler = http.StripPrefix("/uploads/", h)
 	return nil
 }
 
@@ -185,14 +200,15 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	var state, transferID string
 	var deleted bool
-	err := a.store.db.QueryRowContext(r.Context(), "SELECT t.status,f.deleted,t.id FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE f.id=?", id).Scan(&state, &deleted, &transferID)
+	user := userFromContext(r.Context())
+	err := a.store.db.QueryRowContext(r.Context(), "SELECT t.status,f.deleted,t.id FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE f.id=? AND t.user_id=?", id, user.ID).Scan(&state, &deleted, &transferID)
 	if err != nil || deleted || state != "draft" {
 		notFound(w)
 		return
 	}
 	ctx, end := a.activate(r.Context(), transferID, randomID())
 	defer end()
-	if err = a.store.db.QueryRowContext(ctx, "SELECT status FROM transfers WHERE id=?", transferID).Scan(&state); err != nil || state != "draft" {
+	if err = a.store.db.QueryRowContext(ctx, "SELECT t.status FROM transfers t JOIN users u ON u.id=t.user_id WHERE t.id=? AND u.id=? AND u.disabled=0 AND u.auth_version=?", transferID, user.ID, user.AuthVersion).Scan(&state); err != nil || state != "draft" {
 		notFound(w)
 		return
 	}

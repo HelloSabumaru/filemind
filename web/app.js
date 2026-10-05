@@ -29,7 +29,7 @@ async function api(path, method = "GET", value) {
     result = { error: content.trim() };
   }
   if (!response.ok) {
-    if (response.status === 401 && page !== "login" && page !== "public") throw new Error("Your session expired. Sign in again, then resume the transfer.");
+    if (response.status === 401 && page !== "login" && page !== "public") throw new Error("Your session expired. Sign in again.");
     throw new Error(result.error || `Request failed (${response.status}).`);
   }
   return result;
@@ -80,7 +80,7 @@ $("#theme-toggle")?.addEventListener("click", () => {
 systemTheme.addEventListener("change", applyTheme);
 applyTheme();
 function openQR(transferID) {
-  $("#qr-image").src = `/admin/api/transfers/${encodeURIComponent(transferID)}/qr.png`;
+  $("#qr-image").src = `/api/transfers/${encodeURIComponent(transferID)}/qr.png`;
   $("#qr-dialog").showModal();
 }
 $("#close-qr")?.addEventListener("click", () => $("#qr-dialog").close());
@@ -122,8 +122,8 @@ document.querySelectorAll("time[data-timestamp]").forEach((node) => {
 });
 $("#logout")?.addEventListener("click", async () => {
   try {
-    await api("/admin/logout", "POST");
-    location.assign("/admin/login");
+    await api("/logout", "POST");
+    location.assign("/login");
   } catch (e) {
     fail(e);
   }
@@ -134,9 +134,9 @@ $("#login-form")?.addEventListener("submit", async (event) => {
   const button = form.querySelector("button");
   button.disabled = true;
   try {
-    await api("/admin/login", "POST", { username: form.elements.username.value, password: form.elements.password.value });
+    await api("/login", "POST", { username: form.elements.username.value, password: form.elements.password.value });
     form.elements.password.value = "";
-    location.assign("/admin");
+    location.assign("/upload");
   } catch (e) {
     fail(e);
   } finally {
@@ -171,7 +171,7 @@ document.querySelectorAll(".download-link").forEach((link) => {
   });
 });
 async function uploadPage() {
-  const config = await api("/admin/api/config");
+  const config = await api("/api/config");
   const form = $("#upload-form");
   form.elements.expiryEnabled.checked = config.expirySeconds > 0;
   form.elements.expiryValue.value = config.expirySeconds ? config.expirySeconds / 86400 : 1;
@@ -182,7 +182,7 @@ async function uploadPage() {
   const states = new Map();
   const resumeID = new URLSearchParams(location.search).get("resume");
   if (resumeID) {
-    draft = await api(`/admin/api/transfers/${encodeURIComponent(resumeID)}`);
+    draft = await api(`/api/transfers/${encodeURIComponent(resumeID)}`);
     if (draft.status !== "draft") throw new Error("This transfer is no longer a resumable draft.");
     form.elements.title.value = draft.title;
     form.elements.expiryEnabled.checked = draft.expirySeconds > 0;
@@ -259,11 +259,11 @@ async function uploadPage() {
         const expiry = form.elements.expiryEnabled.checked ? Math.round(Number(form.elements.expiryValue.value) * Number(form.elements.expiryUnit.value)) : 0;
         const limit = form.elements.limitEnabled.checked ? Number(form.elements.downloadLimit.value) : 0;
         if (!Number.isSafeInteger(expiry) || expiry < 0 || !Number.isSafeInteger(limit) || limit < 0) throw new Error("Check the transfer settings.");
-        draft = await api("/admin/api/transfers", "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files: chosen.map((f) => ({ name: f.name, size: f.size })) });
+        draft = await api("/api/transfers", "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files: chosen.map((f) => ({ name: f.name, size: f.size })) });
         form.elements.password.value = "";
-        history.replaceState(null, "", `/admin?resume=${draft.id}`);
+        history.replaceState(null, "", `/upload?resume=${draft.id}`);
       } else {
-        draft = await api(`/admin/api/transfers/${draft.id}`);
+        draft = await api(`/api/transfers/${draft.id}`);
       }
       const pending = draft.files.filter((f) => !f.uploaded);
       const fileMap = new Map();
@@ -287,8 +287,8 @@ async function uploadPage() {
             else resolve();
           };
           const up = new Upload(fileMap.get(serverFile.id), {
-            endpoint: "/admin/uploads/",
-            uploadUrl: serverFile.started ? `/admin/uploads/${serverFile.id}` : void 0,
+            endpoint: "/uploads/",
+            uploadUrl: serverFile.started ? `/uploads/${serverFile.id}` : void 0,
             chunkSize: 8 * 1024 * 1024,
             retryDelays: [0, 1e3, 3e3, 5e3],
             metadata: { file_id: serverFile.id },
@@ -321,13 +321,13 @@ async function uploadPage() {
         });
       }
       if (cancelled) return;
-      const shared = await api(`/admin/api/transfers/${draft.id}/publish`, "POST", {});
+      const shared = await api(`/api/transfers/${draft.id}/publish`, "POST", {});
       $("#share-url").value = shared.shareUrl;
       $("#share-result").hidden = false;
       form.hidden = true;
       drop.hidden = true;
       $("#selected-files").hidden = true;
-      history.replaceState(null, "", "/admin");
+      history.replaceState(null, "", "/upload");
       $("#upload-heading").textContent = "Share";
       $("#notice").hidden = true;
     } catch (e) {
@@ -373,15 +373,15 @@ async function uploadPage() {
       stopped.finish(new Error("Transfer cancelled."));
     }
     try {
-      await api(`/admin/api/transfers/${draft.id}`, "DELETE");
-      location.assign("/admin");
+      await api(`/api/transfers/${draft.id}`, "DELETE");
+      location.assign("/upload");
     } catch (e) {
       fail(e);
     }
   });
   $("#copy-share").addEventListener("click", () => copy($("#share-url").value));
   $("#show-share-qr").addEventListener("click", () => openQR(draft.id));
-  $("#new-upload").addEventListener("click", () => location.assign("/admin"));
+  $("#new-upload").addEventListener("click", () => location.assign("/upload"));
   renderFiles();
   controls(false);
 }
@@ -390,7 +390,7 @@ async function transfersPage() {
   const container = $("#transfers"), dialog = $("#edit-dialog"), form = $("#edit-form");
   async function load() {
     const request = ++generation;
-    const [transfers, config] = await Promise.all([api(`/admin/api/transfers?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api("/admin/api/config")]);
+    const [transfers, config] = await Promise.all([api(`/api/transfers?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api("/api/config")]);
     if (request !== generation) return;
     $("#storage").textContent = `${bytes(config.storageUsed)} / ${bytes(config.storageQuota)}`;
     container.replaceChildren();
@@ -423,7 +423,7 @@ async function transfersPage() {
       }
       if (t.status === "draft") {
         const resume = el("a", "button secondary", "Resume upload");
-        resume.href = `/admin?resume=${t.id}`;
+        resume.href = `/upload?resume=${t.id}`;
         actions.append(resume);
       }
       if (t.status === "draft" || t.status === "published") actions.append(action("Edit", () => {
@@ -441,13 +441,13 @@ async function transfersPage() {
       }));
       if (t.shareUrl) actions.append(action("Revoke", async () => {
         if (confirm("Disable this link and stop active downloads? Files stay until expiry or deletion.")) {
-          await api(`/admin/api/transfers/${t.id}/revoke`, "POST", {});
+          await api(`/api/transfers/${t.id}/revoke`, "POST", {});
           await load();
         }
       }, "quiet danger"));
       actions.append(action("Delete", async () => {
         if (confirm("Delete this transfer\u2019s stored files? This cannot be undone.")) {
-          await api(`/admin/api/transfers/${t.id}`, "DELETE");
+          await api(`/api/transfers/${t.id}`, "DELETE");
           await load();
         }
       }, "quiet danger"));
@@ -466,7 +466,7 @@ async function transfersPage() {
       if (!form.elements.expiryEnabled.checked) input.expirySeconds = 0;
       else input.expirySeconds = Math.round(Number(form.elements.expiryHours.value) * 3600);
       if (form.elements.passwordAction.value !== "keep") input.password = form.elements.passwordAction.value === "set" ? form.elements.password.value : "";
-      await api(`/admin/api/transfers/${editing.id}`, "PATCH", input);
+      await api(`/api/transfers/${editing.id}`, "PATCH", input);
       form.elements.password.value = "";
       dialog.close();
       await load();
@@ -500,5 +500,114 @@ async function transfersPage() {
   });
   await load();
 }
+async function usersPage() {
+  const container = $("#users"), dialog = $("#user-dialog"), form = $("#user-form");
+  let editing = null, defaults;
+  function edit(user = null) {
+    editing = user;
+    form.reset();
+    $("#user-error").hidden = true;
+    $("#user-dialog-title").textContent = user ? "Edit user" : "Add user";
+    form.elements.username.value = user?.username || "";
+    form.elements.username.readOnly = !!user;
+    form.elements.password.required = !user;
+    form.elements.password.placeholder = user ? "Leave blank to keep current" : "";
+    const quota = user ? user.storageQuota : defaults.defaultUserQuota;
+    form.elements.quotaEnabled.checked = quota > 0;
+    form.elements.quotaGiB.value = (quota || defaults.defaultUserQuota || 1073741824) / 1073741824;
+    form.elements.quotaGiB.disabled = !form.elements.quotaEnabled.checked;
+    dialog.showModal();
+  }
+  async function load() {
+    const [users, settings] = await Promise.all([api("/admin/api/users"), api("/admin/api/settings")]);
+    defaults = settings;
+    container.replaceChildren();
+    for (const user of users) {
+      const card = el("article", "transfer-card"), heading = el("div", "row");
+      heading.append(el("h2", "", user.username));
+      if (user.isAdmin || user.disabled) heading.append(el("span", "badge", user.isAdmin ? "Admin" : "Disabled"));
+      card.append(heading);
+      const usage = el("span", "small muted", user.storageQuota ? `${bytes(user.storageUsed)} / ${bytes(user.storageQuota)}` : bytes(user.storageUsed));
+      usage.title = user.storageQuota ? "Stored and reserved space / account quota" : "Stored and reserved space; shared server limit applies";
+      card.append(usage);
+      const actions = el("div", "actions");
+      actions.append(action("Edit", () => edit(user)));
+      if (!user.isAdmin) actions.append(action(user.disabled ? "Enable" : "Disable", async () => {
+        if (!user.disabled && !confirm(`Disable ${user.username}? Their sessions and active uploads will stop.`)) return;
+        await api(`/admin/api/users/${user.id}`, "PATCH", { disabled: !user.disabled });
+        await load();
+      }, user.disabled ? "secondary" : "quiet danger"));
+      card.append(actions);
+      container.append(card);
+    }
+  }
+  form.elements.quotaEnabled.addEventListener("change", () => {
+    form.elements.quotaGiB.disabled = !form.elements.quotaEnabled.checked;
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const storageQuota = form.elements.quotaEnabled.checked ? Math.round(Number(form.elements.quotaGiB.value) * 1073741824) : 0;
+      if (!Number.isSafeInteger(storageQuota) || storageQuota < 0 || (form.elements.quotaEnabled.checked && storageQuota === 0)) throw new Error("Enter a valid storage quota.");
+      const input = { storageQuota };
+      const target = editing;
+      $("#user-error").hidden = true;
+      if (!target) input.username = form.elements.username.value;
+      const password = form.elements.password.value;
+      if (!target || password) input.password = password;
+      await api(target ? `/admin/api/users/${target.id}` : "/admin/api/users", target ? "PATCH" : "POST", input);
+      form.elements.password.value = "";
+      dialog.close();
+      if (target?.id === document.body.dataset.userId && password) {
+        location.assign("/login");
+        return;
+      }
+      await load();
+      notice(target ? "Account updated." : "Account created.");
+    } catch (e) {
+      if (dialog.open) {
+        $("#user-error").textContent = e.message;
+        $("#user-error").hidden = false;
+      } else fail(e);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  dialog.addEventListener("close", () => { form.elements.password.value = ""; });
+  $("#close-user").addEventListener("click", () => dialog.close());
+  $("#new-user").addEventListener("click", () => { if (defaults) edit(); });
+  await load();
+}
+async function settingsPage() {
+  const form = $("#settings-form");
+  const settings = await api("/admin/api/settings");
+  const fields = { defaultUserQuotaGiB: "defaultUserQuota", maxFileSizeGiB: "maxFileSize", maxTransferSizeGiB: "maxTransferSize", storageQuotaGiB: "storageQuota" };
+  for (const [name, key] of Object.entries(fields)) form.elements[name].value = settings[key] / 1073741824;
+  form.elements.expiryHours.value = settings.expirySeconds / 3600;
+  form.elements.downloadLimit.value = settings.downloadLimit;
+  $("#settings-storage").textContent = `${bytes(settings.storageUsed)} reserved`;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const input = {};
+      for (const [name, key] of Object.entries(fields)) input[key] = Math.round(Number(form.elements[name].value) * 1073741824);
+      input.expirySeconds = Math.round(Number(form.elements.expiryHours.value) * 3600);
+      input.downloadLimit = Number(form.elements.downloadLimit.value);
+      if (Object.values(input).some((value) => !Number.isSafeInteger(value) || value < 0)) throw new Error("Enter valid settings.");
+      await api("/admin/api/settings", "PUT", input);
+      notice("Settings saved.");
+    } catch (e) {
+      fail(e);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+if (page === "settings") settingsPage().catch(fail);
+if (page === "users") usersPage().catch(fail);
 if (page === "upload") uploadPage().catch(fail);
 if (page === "transfers") transfersPage().catch(fail);

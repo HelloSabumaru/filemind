@@ -7,7 +7,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const local = join(root, '.local');
 const binary = join(local, 'filemind');
 const passwordFile = join(local, 'owner-password');
-const password = 'local-test-password-1234';
+const password = 'password';
 let child;
 let stopping = false;
 
@@ -47,17 +47,19 @@ try {
     }
     Object.assign(env, {
       FILEMIND_INSECURE_DEVELOPMENT: 'true',
+      FILEMIND_DEMO: 'true',
       FILEMIND_OWNER_LISTEN: '127.0.0.1:9080',
       FILEMIND_PUBLIC_LISTEN: '127.0.0.1:9081',
       FILEMIND_OWNER_URL: 'http://localhost:9080',
       FILEMIND_PUBLIC_URL: 'http://localhost:9081',
       FILEMIND_OWNER_USERNAME: 'admin',
-      FILEMIND_DATA_DIR: join(local, 'data'),
+      FILEMIND_DATA_DIR: join(local, 'data-v2'),
       FILEMIND_OWNER_PASSWORD_FILE: passwordFile,
     });
-    console.log('Local development: http://localhost:9080/admin');
-    console.log('Login: admin. Password is in .local/owner-password.');
-    console.log('Test data persists in .local/data. Press Ctrl+C to stop.');
+    console.log('FileMind demo: http://localhost:9080/upload');
+    console.log('Login: admin. Initial password is in .local/owner-password.');
+    console.log('Demo upload account: user.');
+    console.log('Test data persists in .local/data-v2. Press Ctrl+C to stop.');
     process.exitCode = await run(binary, [], env);
   }
 } catch (error) {

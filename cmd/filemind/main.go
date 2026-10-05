@@ -62,7 +62,7 @@ func main() {
 		}()
 	}
 	go a.Background(ctx)
-	logger.Info("Filemind ready")
+	logger.Info("FileMind ready")
 	select {
 	case <-ctx.Done():
 	case err = <-failures:
@@ -82,7 +82,7 @@ func main() {
 
 func safeStartupError(err error) string {
 	// Filesystem and database errors can contain private paths or SQL values.
-	for _, prefix := range []string{"owner password", "cannot read owner", "data directory", "invalid stored", "invalid storage", "invalid listener", "HTTPS", "origins", "owner and public", "listeners must"} {
+	for _, prefix := range []string{"owner password", "cannot read owner", "data directory", "invalid stored", "invalid storage", "invalid listener", "HTTPS", "origins", "owner and public", "listeners must", "unsupported database schema"} {
 		if strings.HasPrefix(err.Error(), prefix) {
 			return err.Error()
 		}

@@ -103,9 +103,9 @@ func (b *browser) page(t *testing.T, path string) *httptest.ResponseRecorder {
 }
 func (b *browser) login(t *testing.T) {
 	t.Helper()
-	b.page(t, "/admin/login")
-	checkStatus(t, b.json("POST", "/admin/login", map[string]string{"username": "admin", "password": "owner-password-for-validation"}), 200)
-	b.page(t, "/admin")
+	b.page(t, "/login")
+	checkStatus(t, b.json("POST", "/login", map[string]string{"username": "admin", "password": "owner-password-for-validation"}), 200)
+	b.page(t, "/upload")
 }
 func checkStatus(t *testing.T, w *httptest.ResponseRecorder, want int) {
 	t.Helper()
@@ -129,18 +129,18 @@ func draft(t *testing.T, b *browser, limit int64, password string, payloads ...s
 	for i, data := range payloads {
 		files = append(files, map[string]any{"name": "file-" + strconv.Itoa(i) + ".txt", "size": len(data)})
 	}
-	return readTransfer(t, b.json("POST", "/admin/api/transfers", map[string]any{"title": "Validation transfer", "expirySeconds": 86400, "downloadLimit": limit, "password": password, "files": files}))
+	return readTransfer(t, b.json("POST", "/api/transfers", map[string]any{"title": "Validation transfer", "expirySeconds": 86400, "downloadLimit": limit, "password": password, "files": files}))
 }
 
 func startFile(t *testing.T, b *browser, file File) string {
 	t.Helper()
-	w := b.request("POST", "/admin/uploads/", nil, map[string]string{"Tus-Resumable": "1.0.0", "Upload-Length": strconv.FormatInt(file.Size, 10), "Upload-Metadata": "file_id " + base64.StdEncoding.EncodeToString([]byte(file.ID))})
+	w := b.request("POST", "/uploads/", nil, map[string]string{"Tus-Resumable": "1.0.0", "Upload-Length": strconv.FormatInt(file.Size, 10), "Upload-Metadata": "file_id " + base64.StdEncoding.EncodeToString([]byte(file.ID))})
 	checkStatus(t, w, 201)
-	want := b.app.cfg.OwnerURL + "/admin/uploads/" + file.ID
+	want := b.app.cfg.OwnerURL + "/uploads/" + file.ID
 	if w.Header().Get("Location") != want {
 		t.Fatalf("noncanonical upload location %q", w.Header().Get("Location"))
 	}
-	return "/admin/uploads/" + file.ID
+	return "/uploads/" + file.ID
 }
 func patchFile(t *testing.T, b *browser, path string, offset int, data string) {
 	t.Helper()
@@ -154,7 +154,7 @@ func publish(t *testing.T, b *browser, transfer Transfer, payloads ...string) Tr
 			patchFile(t, b, path, 0, payloads[i])
 		}
 	}
-	transfer = readTransfer(t, b.json("POST", "/admin/api/transfers/"+transfer.ID+"/publish", map[string]any{}))
+	transfer = readTransfer(t, b.json("POST", "/api/transfers/"+transfer.ID+"/publish", map[string]any{}))
 	transfer.ShareToken = strings.TrimPrefix(transfer.ShareURL, b.app.cfg.PublicURL+"/s/")
 	return transfer
 }
@@ -166,18 +166,18 @@ func TestPrivatePublicBoundaryAndCSRF(t *testing.T) {
 	a := testApp(t)
 	owner := newBrowser(a, false)
 	public := newBrowser(a, true)
-	for _, path := range []string{"/admin", "/admin/login", "/admin/api/transfers", "/admin/uploads/"} {
+	for _, path := range []string{"/upload", "/login", "/api/transfers", "/uploads/"} {
 		checkStatus(t, public.request("GET", path, nil, map[string]string{"Tailscale-Funnel-Request": "?0"}), 404)
 	}
-	checkStatus(t, owner.json("POST", "/admin/api/transfers", map[string]any{}), 401)
-	owner.page(t, "/admin/login")
-	checkStatus(t, owner.request("POST", "/admin/login", strings.NewReader(`{"username":"admin","password":"owner-password-for-validation"}`), map[string]string{"Content-Type": "application/json", "Origin": "https://attacker.invalid"}), 403)
+	checkStatus(t, owner.json("POST", "/api/transfers", map[string]any{}), 401)
+	owner.page(t, "/login")
+	checkStatus(t, owner.request("POST", "/login", strings.NewReader(`{"username":"admin","password":"owner-password-for-validation"}`), map[string]string{"Content-Type": "application/json", "Origin": "https://attacker.invalid"}), 403)
 	owner.login(t)
-	checkStatus(t, owner.request("POST", "/admin/api/transfers", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": "invalid"}), 403)
+	checkStatus(t, owner.request("POST", "/api/transfers", strings.NewReader(`{}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": "invalid"}), 403)
 	transfer := publish(t, owner, draft(t, owner, 1, "", "hello"), "hello")
 	checkStatus(t, public.request("GET", "/s/"+transfer.ShareToken, nil, nil), 200)
-	checkStatus(t, public.request("POST", "/admin/uploads/", nil, nil), 404)
-	qr := owner.request("GET", "/admin/api/transfers/"+transfer.ID+"/qr.png", nil, nil)
+	checkStatus(t, public.request("POST", "/uploads/", nil, nil), 404)
+	qr := owner.request("GET", "/api/transfers/"+transfer.ID+"/qr.png", nil, nil)
 	checkStatus(t, qr, 200)
 	if _, err := png.Decode(bytes.NewReader(qr.Body.Bytes())); err != nil {
 		t.Fatal(err)
@@ -188,8 +188,8 @@ func TestPrivatePublicBoundaryAndCSRF(t *testing.T) {
 	}
 	checkStatus(t, public.request("GET", "/s/"+randomToken(), nil, nil), 404)
 	checkStatus(t, public.request("GET", "/s/not-a-token", nil, nil), 404)
-	checkStatus(t, owner.json("POST", "/admin/logout", nil), 200)
-	checkStatus(t, owner.request("GET", "/admin/api/transfers", nil, nil), 401)
+	checkStatus(t, owner.json("POST", "/logout", nil), 200)
+	checkStatus(t, owner.request("GET", "/api/transfers", nil, nil), 401)
 }
 
 func TestResumableUploadAndRestart(t *testing.T) {
@@ -199,7 +199,7 @@ func TestResumableUploadAndRestart(t *testing.T) {
 	transfer := draft(t, b, 0, "", "abcdef")
 	path := startFile(t, b, transfer.Files[0])
 	patchFile(t, b, path, 0, "abc")
-	checkStatus(t, b.json("POST", "/admin/api/transfers/"+transfer.ID+"/publish", nil), 409)
+	checkStatus(t, b.json("POST", "/api/transfers/"+transfer.ID+"/publish", nil), 409)
 	checkStatus(t, b.request("PATCH", path, strings.NewReader("bad"), map[string]string{"Tus-Resumable": "1.0.0", "Upload-Offset": "0", "Content-Type": "application/offset+octet-stream"}), 409)
 	a.Close()
 	restarted, err := New(a.cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -214,7 +214,7 @@ func TestResumableUploadAndRestart(t *testing.T) {
 		t.Fatal("offset did not survive restart")
 	}
 	patchFile(t, b, path, 3, "def")
-	shared := readTransfer(t, b.json("POST", "/admin/api/transfers/"+transfer.ID+"/publish", nil))
+	shared := readTransfer(t, b.json("POST", "/api/transfers/"+transfer.ID+"/publish", nil))
 	shared.ShareToken = strings.TrimPrefix(shared.ShareURL, a.cfg.PublicURL+"/s/")
 	public := newBrowser(restarted, true)
 	data := public.request("GET", downloadPath(shared, 0), nil, nil)
@@ -226,22 +226,25 @@ func TestResumableUploadAndRestart(t *testing.T) {
 
 func TestUploadValidationAndQuota(t *testing.T) {
 	a := testApp(t)
-	a.cfg.MaxFileSize = 10
-	a.cfg.MaxTransferSize = 10
-	a.cfg.StorageQuota = 12
+	limits := a.settings()
+	limits.MaxFileSize = 10
+	limits.MaxTransferSize = 10
+	limits.StorageQuota = 12
+	limits.DefaultUserQuota = 12
+	a.preferences.Store(&limits)
 	b := newBrowser(a, false)
 	b.login(t)
 	for _, name := range []string{"../outside", "/tmp/file", "bad\\path", "bad\x00name"} {
-		checkStatus(t, b.json("POST", "/admin/api/transfers", map[string]any{"files": []map[string]any{{"name": name, "size": 1}}}), 400)
+		checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": name, "size": 1}}}), 400)
 	}
 	transfer := draft(t, b, 0, "", "12345678")
-	checkStatus(t, b.json("POST", "/admin/api/transfers", map[string]any{"files": []map[string]any{{"name": "too-big", "size": 11}}}), 400)
-	checkStatus(t, b.json("POST", "/admin/api/transfers", map[string]any{"files": []map[string]any{{"name": "quota", "size": 5}}}), 400)
-	checkStatus(t, b.request("POST", "/admin/uploads/", nil, map[string]string{"Tus-Resumable": "1.0.0", "Upload-Length": "9", "Upload-Metadata": "file_id " + base64.StdEncoding.EncodeToString([]byte(transfer.Files[0].ID))}), 409)
-	checkStatus(t, b.json("DELETE", "/admin/api/transfers/"+transfer.ID, nil), 200)
+	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "too-big", "size": 11}}}), 400)
+	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "quota", "size": 5}}}), 400)
+	checkStatus(t, b.request("POST", "/uploads/", nil, map[string]string{"Tus-Resumable": "1.0.0", "Upload-Length": "9", "Upload-Metadata": "file_id " + base64.StdEncoding.EncodeToString([]byte(transfer.Files[0].ID))}), 409)
+	checkStatus(t, b.json("DELETE", "/api/transfers/"+transfer.ID, nil), 200)
 	draft(t, b, 0, "", "12345")
 	a.cfg.MinFreeSpace = 1 << 60
-	checkStatus(t, b.json("POST", "/admin/api/transfers", map[string]any{"files": []map[string]any{{"name": "disk-full", "size": 1}}}), 507)
+	checkStatus(t, b.json("POST", "/api/transfers", map[string]any{"files": []map[string]any{{"name": "disk-full", "size": 1}}}), 507)
 }
 
 func TestActiveUploadDoesNotBlockOtherTransfersAndCanBeDeleted(t *testing.T) {
@@ -291,7 +294,7 @@ func TestActiveUploadDoesNotBlockOtherTransfersAndCanBeDeleted(t *testing.T) {
 	other := publish(t, owner, draft(t, owner, 1, "", "other"), "other")
 	public := newBrowser(a, true)
 	checkStatus(t, public.request("GET", downloadPath(other, 0), nil, nil), 200)
-	checkStatus(t, owner.json("DELETE", "/admin/api/transfers/"+transfer.ID, nil), 200)
+	checkStatus(t, owner.json("DELETE", "/api/transfers/"+transfer.ID, nil), 200)
 	writer.Close()
 	select {
 	case <-finished:
@@ -406,13 +409,13 @@ func TestPasswordSessionsRotationAndBan(t *testing.T) {
 	checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 401)
 	checkStatus(t, public.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": "transfer-password"}), 200)
 	checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 200)
-	checkStatus(t, owner.json("PATCH", "/admin/api/transfers/"+transfer.ID, map[string]string{"password": "new-transfer-password"}), 200)
+	checkStatus(t, owner.json("PATCH", "/api/transfers/"+transfer.ID, map[string]string{"password": "new-transfer-password"}), 200)
 	checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 401)
 	for i := 0; i < 5; i++ {
 		checkStatus(t, public.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": "wrong"}), 403)
 	}
 	checkStatus(t, public.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": "new-transfer-password"}), 429)
-	checkStatus(t, owner.request("GET", "/admin/api/transfers", nil, nil), 200)
+	checkStatus(t, owner.request("GET", "/api/transfers", nil, nil), 200)
 }
 
 func TestReservationsAtomicConcurrentAndCrashRecovery(t *testing.T) {
@@ -450,7 +453,7 @@ func TestReservationsAtomicConcurrentAndCrashRecovery(t *testing.T) {
 	if files[1].Reserved != 0 {
 		t.Fatal("partial ZIP reservation leaked")
 	}
-	checkStatus(t, owner.json("PATCH", "/admin/api/transfers/"+stored.ID, map[string]any{"downloadLimit": 2}), 409)
+	checkStatus(t, owner.json("PATCH", "/api/transfers/"+stored.ID, map[string]any{"downloadLimit": 2}), 409)
 	if err = a.recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +516,7 @@ func TestExpiryRevocationCleanupAndHistory(t *testing.T) {
 	owner.login(t)
 	public := newBrowser(a, true)
 	transfer := publish(t, owner, draft(t, owner, 0, "", "data"), "data")
-	checkStatus(t, owner.json("POST", "/admin/api/transfers/"+transfer.ID+"/revoke", nil), 200)
+	checkStatus(t, owner.json("POST", "/api/transfers/"+transfer.ID+"/revoke", nil), 200)
 	checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 404)
 	_, err := a.store.db.Exec("UPDATE transfers SET expires_at=? WHERE id=?", time.Now().Unix()-1, transfer.ID)
 	if err != nil {

@@ -4,18 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="csrf-token" content="{{.CSRF}}">
-  <title>Filemind</title>
+  <title>FileMind</title>
   <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/style.css">
   <script defer src="/assets/app.js"></script>
 </head>
-<body data-page="{{.Page}}">
+<body data-page="{{.Page}}" data-user-id="{{.User.ID}}">
 <header class="topbar">
-  <a class="brand" href="/admin"><img src="/assets/icon.svg" alt="" width="24" height="24">Filemind</a>
+  <a class="brand" href="/upload"><img src="/assets/icon.svg" alt="" width="24" height="24">FileMind</a>
   <nav aria-label="Main">
     {{if ne .Page "login"}}
-    <a href="/admin" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
-    <a href="/admin/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
+    <a href="/upload" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
+    <a href="/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
+    {{if .User.IsAdmin}}
+    <a href="/admin/users" {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>
+    <a href="/admin/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a>
+    {{end}}
     <button type="button" id="logout" class="quiet">Sign out</button>
     {{end}}
     <button type="button" id="theme-toggle" class="icon-button quiet" aria-label="Switch theme" title="Switch theme"></button>
@@ -76,8 +80,44 @@
       </section>
     </div>
   </section>
+  {{else if eq .Page "settings"}}
+  <section class="settings-page">
+    <h1>Settings</h1>
+    <form id="settings-form" class="panel">
+      <div class="form-grid">
+        <label>Default user quota (GiB)<input name="defaultUserQuotaGiB" type="number" min="0" max="1048576" step="any" required></label>
+        <label>Default expiry (hours)<input name="expiryHours" type="number" min="0" max="8760" step="any" required></label>
+      </div>
+      <div class="form-grid">
+        <label>Default downloads per file<input name="downloadLimit" type="number" min="0" max="1000000" step="1" required></label>
+        <label>Maximum file size (GiB)<input name="maxFileSizeGiB" type="number" min="0.000000001" max="1048576" step="any" required></label>
+      </div>
+      <div class="form-grid">
+        <label>Maximum transfer size (GiB)<input name="maxTransferSizeGiB" type="number" min="0.000000001" max="1048576" step="any" required></label>
+        <label>Total storage limit (GiB)<input name="storageQuotaGiB" type="number" min="0.000000001" max="1048576" step="any" required></label>
+      </div>
+      <p class="small muted">Defaults apply to new users and transfers. 0 disables the default user quota, expiry or download limit.</p>
+      <div class="row"><button type="submit">Save</button><span id="settings-storage" class="small muted"></span></div>
+    </form>
+  </section>
+  {{else if eq .Page "users"}}
+  <section class="page-heading row"><h1>Users</h1><button id="new-user" type="button">Add user</button></section>
+  <div id="users" aria-live="polite"></div>
+  <dialog id="user-dialog" aria-labelledby="user-dialog-title">
+    <form id="user-form">
+      <h2 id="user-dialog-title">Add user</h2>
+      <div id="user-error" role="alert" class="small danger" hidden></div>
+      <label>Username<input name="username" autocomplete="off" required maxlength="100" pattern="[A-Za-z0-9_.@\-]+"></label>
+      <label>Password<input name="password" type="password" autocomplete="new-password" maxlength="256" required></label>
+      <div>
+        <label class="check"><input name="quotaEnabled" type="checkbox">Storage quota</label>
+        <div class="inline-fields"><input name="quotaGiB" type="number" min="0.000001" step="any" aria-label="Storage quota in GiB"><span class="unit">GiB</span></div>
+      </div>
+      <div class="actions"><button type="submit">Save</button><button id="close-user" type="button" class="secondary">Cancel</button></div>
+    </form>
+  </dialog>
   {{else}}
-  <section class="page-heading row"><h1>Transfers</h1><a class="button" href="/admin">Upload</a></section>
+  <section class="page-heading"><h1>Transfers</h1></section>
   <div class="toolbar">
     <input id="search" class="search" type="search" aria-label="Search transfers" placeholder="Search" maxlength="200">
     <span id="storage" class="small muted" title="Stored and reserved space"></span>

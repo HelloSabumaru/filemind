@@ -19,6 +19,7 @@ type Config struct {
 	DefaultExpiry                                                                  time.Duration
 	DefaultDownloadLimit, MaxFileSize, MaxTransferSize, StorageQuota, MinFreeSpace int64
 	Development                                                                    bool
+	Demo                                                                           bool
 	TrustedProxies                                                                 []netip.Prefix
 }
 
@@ -27,6 +28,9 @@ func ConfigFromEnv() (Config, error) {
 	var err error
 	if c.Development, err = strconv.ParseBool(env("FILEMIND_INSECURE_DEVELOPMENT", "false")); err != nil {
 		return c, errors.New("invalid FILEMIND_INSECURE_DEVELOPMENT")
+	}
+	if c.Demo, err = strconv.ParseBool(env("FILEMIND_DEMO", "false")); err != nil {
+		return c, errors.New("invalid FILEMIND_DEMO")
 	}
 	if c.DefaultExpiry, err = time.ParseDuration(env("FILEMIND_DEFAULT_EXPIRY", "24h")); err != nil || c.DefaultExpiry < 0 {
 		return c, errors.New("invalid FILEMIND_DEFAULT_EXPIRY")
@@ -66,8 +70,11 @@ func (c Config) Validate() error {
 	if !filepath.IsAbs(c.DataDir) || filepath.Clean(c.DataDir) == "/" {
 		return errors.New("FILEMIND_DATA_DIR must be a dedicated absolute directory")
 	}
-	if c.OwnerUsername == "" || len(c.OwnerUsername) > 100 || c.OwnerPasswordFile == "" {
+	if !validUsername(c.OwnerUsername) || c.OwnerPasswordFile == "" {
 		return errors.New("owner username and password file are required")
+	}
+	if c.Demo && (!c.Development || strings.EqualFold(c.OwnerUsername, "user")) {
+		return errors.New("demo mode requires local development and a separate administrator username")
 	}
 	if c.MaxFileSize <= 0 || c.MaxTransferSize < c.MaxFileSize || c.StorageQuota < c.MaxTransferSize || c.StorageQuota > 1<<50 || c.DefaultDownloadLimit < 0 || c.DefaultDownloadLimit > 1000000 || c.DefaultExpiry < 0 || c.DefaultExpiry > 365*24*time.Hour || c.DefaultExpiry%time.Second != 0 || c.MinFreeSpace < 0 {
 		return errors.New("invalid storage or retention settings")
@@ -100,6 +107,9 @@ func (c Config) Validate() error {
 		n, err := strconv.Atoi(port)
 		if err != nil || n < 1 || n > 65535 || (host != "" && net.ParseIP(host) == nil && host != "localhost") {
 			return errors.New("invalid listener address")
+		}
+		if c.Demo && !isLoopback(host) {
+			return errors.New("demo listeners must use loopback addresses")
 		}
 	}
 	if c.OwnerListen == c.PublicListen {

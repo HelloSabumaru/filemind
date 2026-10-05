@@ -58,31 +58,29 @@ func (a *App) cookieName(kind string) string {
 	return prefix + "filemind-" + kind
 }
 func (a *App) ownerToken(r *http.Request) string {
-	c, e := r.Cookie(a.cookieName("owner"))
+	c, e := r.Cookie(a.cookieName("session"))
 	if e != nil || !validToken(c.Value) {
 		return ""
 	}
 	return c.Value
 }
-func (a *App) ownerAuthenticated(r *http.Request) bool {
+func (a *App) authenticatedUser(r *http.Request) (User, error) {
 	token := a.ownerToken(r)
 	if token == "" {
-		return false
+		return User{}, sql.ErrNoRows
 	}
-	var count int
-	err := a.store.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sessions WHERE token_hash=? AND kind='owner' AND expires_at>?", tokenHash(token), time.Now().Unix()).Scan(&count)
-	return err == nil && count == 1
+	return scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.kind='owner' AND s.auth_version=u.auth_version AND s.expires_at>? AND u.disabled=0", tokenHash(token), time.Now().Unix()))
 }
 
-func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer) error {
+func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer, user User) error {
 	token := randomToken()
 	lifetime := time.Hour
 	name := a.cookieName("share-" + t.ID)
 	path := "/s/" + t.ShareToken
 	if kind == "owner" {
 		lifetime = 24 * time.Hour
-		name = a.cookieName("owner")
-		path = "/admin"
+		name = a.cookieName("session")
+		path = "/"
 	}
 	tx, err := a.store.db.Begin()
 	if err != nil {
@@ -99,7 +97,19 @@ func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer) error
 	if count >= 10000 {
 		return errors.New("session capacity reached")
 	}
-	_, err = tx.Exec("INSERT INTO sessions(token_hash,kind,transfer_id,auth_version,expires_at) VALUES(?,?,?,?,?)", tokenHash(token), kind, t.ID, t.AuthVersion, time.Now().Add(lifetime).Unix())
+	var userID any
+	version := t.AuthVersion
+	if kind == "owner" {
+		var active int
+		if err = tx.QueryRow("SELECT COUNT(*) FROM users WHERE id=? AND auth_version=? AND disabled=0", user.ID, user.AuthVersion).Scan(&active); err != nil {
+			return err
+		}
+		if active != 1 {
+			return errors.New("account changed; sign in again")
+		}
+		userID, version = user.ID, user.AuthVersion
+	}
+	_, err = tx.Exec("INSERT INTO sessions(token_hash,kind,user_id,transfer_id,auth_version,expires_at) VALUES(?,?,?,?,?,?)", tokenHash(token), kind, userID, t.ID, version, time.Now().Add(lifetime).Unix())
 	if err != nil {
 		return err
 	}
@@ -124,7 +134,7 @@ func (a *App) shareAuthenticated(r *http.Request, t Transfer) bool {
 }
 
 func (a *App) csrfScope(r *http.Request, scope string) string {
-	if scope == "owner" {
+	if scope == "account" {
 		return scope + ":" + a.ownerToken(r)
 	}
 	return scope
@@ -175,32 +185,58 @@ func (a *App) checkCSRF(r *http.Request, scope, origin string) bool {
 }
 
 func (a *App) initializeCredentials(password string) error {
-	existing, err := a.store.setting("owner_hash")
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && verifyPassword(existing, password) {
-		a.ownerHash = existing
-		return nil
-	}
-	hash, err := hashPassword(password)
-	if err != nil {
-		return err
-	}
 	tx, err := a.store.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("INSERT INTO settings(key,value) VALUES('owner_hash',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", hash); err != nil {
+	var id, bootstrapHash string
+	err = tx.QueryRow("SELECT value FROM settings WHERE key='bootstrap_user'").Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		id = randomID()
+		bootstrapHash, err = hashPassword(password)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec("INSERT INTO users(id,username,password_hash,is_admin,storage_quota) VALUES(?,?,?,1,?)", id, a.cfg.OwnerUsername, bootstrapHash, a.settings().DefaultUserQuota); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("INSERT INTO settings(key,value) VALUES('bootstrap_user',?),('bootstrap_hash',?)", id, bootstrapHash); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
-	}
-	if _, err = tx.Exec("DELETE FROM sessions WHERE kind='owner'"); err != nil {
-		return err
+	} else {
+		user, err := scanUser(tx.QueryRow("SELECT "+userColumns+" FROM users u WHERE u.id=?", id))
+		if err != nil || !user.IsAdmin || user.Disabled {
+			return errors.New("invalid stored administrator")
+		}
+		if err = tx.QueryRow("SELECT value FROM settings WHERE key='bootstrap_hash'").Scan(&bootstrapHash); err != nil {
+			return err
+		}
+		changed := !verifyPassword(bootstrapHash, password)
+		if changed {
+			bootstrapHash, err = hashPassword(password)
+			if err != nil {
+				return err
+			}
+			if _, err = tx.Exec("UPDATE settings SET value=? WHERE key='bootstrap_hash'", bootstrapHash); err != nil {
+				return err
+			}
+			user.PasswordHash = bootstrapHash
+		}
+		if changed || user.Username != a.cfg.OwnerUsername {
+			if _, err = tx.Exec("UPDATE users SET username=?,password_hash=?,auth_version=auth_version+1 WHERE id=?", a.cfg.OwnerUsername, user.PasswordHash, id); err != nil {
+				return err
+			}
+			if _, err = tx.Exec("DELETE FROM sessions WHERE user_id=?", id); err != nil {
+				return err
+			}
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	a.ownerHash = hash
+	a.loginDummyHash = bootstrapHash
 	return nil
 }

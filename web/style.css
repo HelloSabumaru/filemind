@@ -123,7 +123,7 @@ nav { display: flex; align-items: center; gap: 1rem; }
 nav a { color: var(--muted); text-decoration: none; font-size: .875rem; }
 nav a[aria-current] { color: var(--text); font-weight: 600; }
 main { max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; }
-.upload-page, .recipient { max-width: 720px; margin-left: auto; margin-right: auto; }
+.upload-page, .recipient, .settings-page { max-width: 720px; margin-left: auto; margin-right: auto; }
 .panel { padding: 1.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .page-heading { margin-bottom: 1.25rem; }
 .page-heading h1 { margin-bottom: 0; }
@@ -195,4 +195,8 @@ dialog .row h2 { margin-bottom: 0; }
   .search { width: 100%; }
   .download-link { padding: .5rem .65rem; font-size: .8rem; }
   .login { margin: 2rem auto; }
+}
+@media (max-width: 480px) {
+  .topbar { flex-wrap: wrap; }
+  .topbar nav { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
 }
