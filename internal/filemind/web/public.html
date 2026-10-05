@@ -1,0 +1,47 @@
+{{define "public"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRF}}">
+  <title>{{.Transfer.Title}} · Filemind</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body data-page="public">
+<header class="topbar">
+  <span class="brand"><img src="/assets/icon.svg" alt="" width="24" height="24">Filemind</span>
+  <button type="button" id="theme-toggle" class="icon-button quiet" aria-label="Switch theme" title="Switch theme"></button>
+</header>
+<main class="recipient">
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section class="page-heading">
+    <h1>{{.Transfer.Title}}</h1>
+    {{if .Transfer.ExpiresAt}}<p class="small muted">Expires <time data-timestamp="{{.Transfer.ExpiresAt}}"></time></p>{{end}}
+  </section>
+  <section class="panel">
+    {{if .Locked}}
+    <form id="unlock-form">
+      <label>Password<input name="password" type="password" autocomplete="off" required maxlength="256"></label>
+      <button type="submit">Unlock</button>
+    </form>
+    {{else}}
+    <ul class="file-list download-files">
+      {{range .Transfer.Files}}
+      <li>
+        <div class="file-description"><strong>{{.Name}}</strong><span class="small muted">{{bytes .Size}}{{if $.Transfer.DownloadLimit}} · {{.Downloads}} / {{$.Transfer.DownloadLimit}} downloads{{end}}</span></div>
+        {{if or .Deleted (and $.Transfer.DownloadLimit (ge .Downloads $.Transfer.DownloadLimit))}}
+        <span class="badge">Unavailable</span>
+        {{else}}
+        <a class="button secondary download-link" href="/s/{{$.Transfer.ShareToken}}/files/{{.ID}}" download>Download</a>
+        {{end}}
+      </li>
+      {{end}}
+    </ul>
+    <a class="button download-link" href="/s/{{.Transfer.ShareToken}}/archive" download>Download ZIP</a>
+    {{end}}
+  </section>
+</main>
+</body>
+</html>{{end}}

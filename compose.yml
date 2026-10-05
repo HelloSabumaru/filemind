@@ -1,0 +1,50 @@
+services:
+  filemind:
+    build: .
+    image: filemind:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9080:8080"
+      - "127.0.0.1:9081:8081"
+    environment:
+      FILEMIND_OWNER_URL: ${FILEMIND_OWNER_URL:?Set the private HTTPS origin}
+      FILEMIND_PUBLIC_URL: ${FILEMIND_PUBLIC_URL:?Set the public HTTPS origin}
+      FILEMIND_OWNER_USERNAME: ${FILEMIND_OWNER_USERNAME:-admin}
+      FILEMIND_OWNER_PASSWORD_FILE: /run/secrets/owner_password
+      FILEMIND_DEFAULT_EXPIRY: ${FILEMIND_DEFAULT_EXPIRY:-24h}
+      FILEMIND_DEFAULT_DOWNLOAD_LIMIT: ${FILEMIND_DEFAULT_DOWNLOAD_LIMIT:-0}
+      FILEMIND_MAX_FILE_SIZE: ${FILEMIND_MAX_FILE_SIZE:-2147483648}
+      FILEMIND_MAX_TRANSFER_SIZE: ${FILEMIND_MAX_TRANSFER_SIZE:-2147483648}
+      FILEMIND_STORAGE_QUOTA: ${FILEMIND_STORAGE_QUOTA:-21474836480}
+      FILEMIND_MIN_FREE_SPACE: ${FILEMIND_MIN_FREE_SPACE:-1073741824}
+      FILEMIND_TRUSTED_PROXY_CIDRS: ${FILEMIND_TRUSTED_PROXY_CIDRS:-}
+    secrets:
+      - owner_password
+    volumes:
+      - filemind_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 128
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: [CMD, /filemind, healthcheck]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+secrets:
+  owner_password:
+    file: ./secrets/owner_password
+
+volumes:
+  filemind_data:

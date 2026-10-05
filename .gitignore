@@ -1,0 +1,8 @@
+/data/
+/secrets/
+/.env
+/.local/
+/filemind
+/internal/filemind/web/dist/
+/node_modules/
+/coverage.out

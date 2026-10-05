@@ -1,0 +1,11 @@
+{
+  "name": "filemind-web",
+  "private": true,
+  "scripts": {
+    "dev": "npm run build && node web/dev.mjs",
+    "build": "node web/build.mjs",
+    "check": "node --check web/app.js && node --check web/build.mjs && node --check web/dev.mjs"
+  },
+  "dependencies": { "tus-js-client": "4.3.1" },
+  "devDependencies": { "esbuild": "0.28.2" }
+}

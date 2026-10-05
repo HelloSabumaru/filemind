@@ -1,0 +1,10 @@
+.git
+.env
+.local
+secrets
+data
+node_modules
+filemind
+coverage.out
+internal/filemind/web/dist
+**/*_test.go

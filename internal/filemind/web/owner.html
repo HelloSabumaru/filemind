@@ -1,0 +1,118 @@
+{{define "owner"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRF}}">
+  <title>Filemind</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body data-page="{{.Page}}">
+<header class="topbar">
+  <a class="brand" href="/admin"><img src="/assets/icon.svg" alt="" width="24" height="24">Filemind</a>
+  <nav aria-label="Main">
+    {{if ne .Page "login"}}
+    <a href="/admin" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
+    <a href="/admin/transfers" {{if eq .Page "transfers"}}aria-current="page"{{end}}>Transfers</a>
+    <button type="button" id="logout" class="quiet">Sign out</button>
+    {{end}}
+    <button type="button" id="theme-toggle" class="icon-button quiet" aria-label="Switch theme" title="Switch theme"></button>
+  </nav>
+</header>
+<main>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  {{if eq .Page "login"}}
+  <section class="login panel">
+    <h1>Sign in</h1>
+    <form id="login-form">
+      <label>Username<input name="username" autocomplete="username" required maxlength="100"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <button type="submit">Sign in</button>
+    </form>
+  </section>
+  {{else if eq .Page "upload"}}
+  <section class="upload-page">
+    <h1 id="upload-heading">Upload</h1>
+    <div class="panel upload-panel">
+      <div id="dropzone" class="dropzone">
+        <p>Drop files here</p>
+        <label class="button file-picker">Choose files<input id="file-picker" type="file" multiple></label>
+      </div>
+      <ul id="selected-files" class="file-list" aria-label="Selected files"></ul>
+      <form id="upload-form" class="settings" hidden>
+        <div class="form-grid">
+          <label>Name<input name="title" maxlength="200" placeholder="Optional"></label>
+          <label>Password<input name="password" type="password" autocomplete="new-password" maxlength="256" placeholder="Optional"></label>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label class="check"><input name="expiryEnabled" type="checkbox">Expire after</label>
+            <div class="inline-fields">
+              <input name="expiryValue" type="number" min="0.000001" max="8760" step="any" aria-label="Expiry duration">
+              <select name="expiryUnit" aria-label="Expiry unit"><option value="3600">hours</option><option value="86400">days</option></select>
+            </div>
+          </div>
+          <div>
+            <label class="check"><input name="limitEnabled" type="checkbox">Downloads per file</label>
+            <input name="downloadLimit" type="number" min="1" max="1000000" step="1" aria-label="Downloads per file">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="upload-submit" type="submit">Upload</button>
+          <button id="resume-draft" type="button" hidden>Resume</button>
+          <button id="pause-upload" type="button" class="secondary" hidden>Pause</button>
+          <button id="cancel-upload" type="button" class="quiet danger" hidden>Cancel</button>
+        </div>
+      </form>
+      <section id="share-result" class="share-result" hidden>
+        <div class="link-row">
+          <input id="share-url" readonly aria-label="Share link">
+          <button id="copy-share" type="button" class="icon-button secondary" data-icon="copy" aria-label="Copy link" title="Copy link"></button>
+          <button id="show-share-qr" type="button" class="secondary" aria-label="QR code">QR</button>
+        </div>
+        <button id="new-upload" type="button" class="quiet">New upload</button>
+      </section>
+    </div>
+  </section>
+  {{else}}
+  <section class="page-heading row"><h1>Transfers</h1><a class="button" href="/admin">Upload</a></section>
+  <div class="toolbar">
+    <input id="search" class="search" type="search" aria-label="Search transfers" placeholder="Search" maxlength="200">
+    <span id="storage" class="small muted" title="Stored and reserved space"></span>
+  </div>
+  <div id="transfers" class="transfer-list" aria-live="polite"></div>
+  <div class="actions pagination">
+    <button id="previous" class="secondary" type="button" disabled>Previous</button>
+    <button id="next" class="secondary" type="button" disabled>Next</button>
+  </div>
+  <dialog id="edit-dialog" aria-labelledby="edit-title">
+    <form id="edit-form">
+      <h2 id="edit-title">Edit transfer</h2>
+      <label>Name<input name="title" required maxlength="200"></label>
+      <div class="form-grid">
+        <div>
+          <label class="check"><input name="expiryEnabled" type="checkbox">Expire after</label>
+          <div class="inline-fields"><input name="expiryHours" type="number" min="0.000278" max="8760" step="any" aria-label="Hours until expiry"><span class="unit">hours</span></div>
+        </div>
+        <div>
+          <label class="check"><input name="limitEnabled" type="checkbox">Downloads per file</label>
+          <input name="downloadLimit" type="number" min="1" max="1000000" aria-label="Downloads per file">
+        </div>
+      </div>
+      <label>Password<select name="passwordAction"><option value="keep">Keep current</option><option value="set">Change</option><option value="remove">Remove</option></select></label>
+      <label id="edit-password-label" hidden>New password<input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
+      <div class="actions"><button type="submit">Save</button><button id="close-edit" type="button" class="secondary">Cancel</button></div>
+    </form>
+  </dialog>
+  {{end}}
+  {{if ne .Page "login"}}
+  <dialog id="qr-dialog" class="qr-dialog" aria-labelledby="qr-title">
+    <div class="row"><h2 id="qr-title">QR code</h2><button id="close-qr" type="button" class="icon-button quiet" data-icon="close" aria-label="Close" title="Close"></button></div>
+    <img id="qr-image" alt="QR code for the share link" width="256" height="256">
+  </dialog>
+  {{end}}
+</main>
+</body>
+</html>{{end}}
