@@ -242,6 +242,34 @@ test("Admin keeps the main navigation and theme while switching sections", async
   assert.equal(await page.locator("html").getAttribute("data-theme"),"light");
 });
 
+test("deleting a transfer removes it from personal and administrative lists", async t => {
+  const owner = await login(t);
+  const admin = await login(t,true);
+  for (const administrative of [false,true]) {
+    const filename = `delete-entire-transfer-${administrative}.txt`;
+    await owner.goto(`${ownerURL}/upload`); await readyUpload(owner);
+    await select(owner,filename,Buffer.from("delete these contents"));
+    await owner.getByRole("button",{name:"Upload",exact:true}).click();
+    const share = await publishedResult(owner);
+    const transfer = (await api(owner,"/api/transfers")).body.find(item => item.shareUrl === share);
+    const page = administrative ? admin : owner;
+    await page.goto(administrative ? `${adminURL}/admin/transfers` : `${ownerURL}/transfers`);
+    const card = page.locator(".transfer-card").filter({hasText:filename});
+    await card.waitFor();
+    page.once("dialog",dialog => dialog.accept());
+    await card.getByRole("button",{name:"Delete",exact:true}).click();
+    await card.waitFor({state:"hidden"});
+    assert.equal(await owner.evaluate(async path => (await fetch(path)).status,`/api/transfers/${transfer.id}`),404);
+    assert.equal(await admin.evaluate(async path => (await fetch(path)).status,`/admin/api/transfers/${transfer.id}`),404);
+    assert.ok(!(await api(owner,"/api/transfers")).body.some(item => item.id === transfer.id));
+    assert.ok(!(await api(admin,"/admin/api/transfers")).body.some(item => item.id === transfer.id));
+    assert.equal((await fetch(share)).status,404);
+    await page.reload();
+    await page.getByRole("heading",{name:administrative ? "All transfers" : "Transfers",exact:true}).waitFor();
+    assert.equal(await page.locator(".transfer-card").filter({hasText:filename}).count(),0);
+  }
+});
+
 test("upload hashing spans multiple chunks and the browser receives exact contents", {timeout:60000}, async t => {
   const page = await login(t);
   const payload = Buffer.alloc(9 * 1024 * 1024 + 17, "u");
@@ -740,7 +768,7 @@ test("private-only mode supports private admin upload resume and blocks main adm
     page.once("dialog",dialog => dialog.accept());
     await page.locator("#cancel-upload").click();
     await page.waitForURL(`${adminURL}/admin/upload`); await readyUpload(page);
-    assert.equal((await api(page,`/admin/api/personal/transfers/${cancelled.id}`)).body.status,"deleted");
+    assert.equal(await page.evaluate(async path => (await fetch(path)).status,`/admin/api/personal/transfers/${cancelled.id}`),404);
     await main.getByRole("link",{name:"Admin",exact:true}).click();
     await page.getByRole("navigation",{name:"Admin",exact:true}).getByRole("link",{name:"All transfers",exact:true}).click();
     await page.locator(".transfer-card").filter({hasText:"private-admin-resume.txt"}).waitFor();

@@ -2,6 +2,7 @@ package filemind
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"net/http/httptest"
@@ -200,6 +201,13 @@ func TestAdminActionsDoNotWaitForPublicationVerification(t *testing.T) {
 			unblock()
 			err := <-result
 			stored, readErr := a.store.transfer(context.Background(), transfer.ID)
+			if action == "delete" {
+				if err == nil || !errors.Is(readErr, sql.ErrNoRows) {
+					t.Fatal("stale verification recreated the deleted transfer", err, readErr)
+				}
+				assertTransferRemoved(t, a, transfer)
+				return
+			}
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
@@ -259,6 +267,13 @@ func TestAdminActionsDoNotWaitForUploadCreation(t *testing.T) {
 				t.Fatal("stale upload creation succeeded after intervention")
 			}
 			stored, err := a.store.transfer(context.Background(), transfer.ID)
+			if action == "delete" {
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatal("stale upload creation recreated the deleted transfer", err)
+				}
+				assertTransferRemoved(t, a, transfer)
+				return
+			}
 			if err != nil || stored.Files[0].Started {
 				t.Fatal("stale upload creation marked the file started", err)
 			}

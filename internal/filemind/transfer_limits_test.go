@@ -127,15 +127,15 @@ func TestUserTransferLimitsPreserveAnotherAccountsCapacity(t *testing.T) {
 	}
 }
 
-func TestDeletingADraftReleasesOnlyItsActiveSlot(t *testing.T) {
+func TestDeletingADraftReleasesItsActiveAndMetadataCapacity(t *testing.T) {
 	a := testApp(t)
 	user, owner, _ := metadataTestOwners(t, a)
 	ids := seedTransferMetadata(t, a, user.ID, "draft occupancy", "draft", maxUserDrafts, 1, false)
 	checkStatus(t, owner.json("DELETE", "/api/transfers/"+ids[0], nil), http.StatusOK)
 	checkStatus(t, owner.json("POST", "/api/transfers", emptyTransferInput(1)), http.StatusOK)
 	usage := readMetadataUsage(t, a, user.ID)
-	if usage.drafts != maxUserDrafts || usage.transfers != maxUserDrafts+1 || usage.files != maxUserDrafts+1 {
-		t.Fatalf("deleted history escaped accounting: %+v", usage)
+	if usage.drafts != maxUserDrafts || usage.transfers != maxUserDrafts || usage.files != maxUserDrafts {
+		t.Fatalf("deleted draft did not release metadata capacity: %+v", usage)
 	}
 }
 

@@ -205,7 +205,7 @@ func (s *Store) putSetting(key, value string) error {
 
 func (s *Store) list(ctx context.Context, userID, search string, offset int) ([]Transfer, error) {
 	search = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(search)
-	rows, err := s.db.QueryContext(ctx, `SELECT `+transferColumns+` FROM transfers WHERE (?='' OR user_id=?) AND (title LIKE ? ESCAPE '\' OR id IN (SELECT transfer_id FROM files WHERE name LIKE ? ESCAPE '\')) ORDER BY created_at DESC,rowid DESC LIMIT 50 OFFSET ?`, userID, userID, "%"+search+"%", "%"+search+"%", offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+transferColumns+` FROM transfers WHERE status!='deleted' AND (?='' OR user_id=?) AND (title LIKE ? ESCAPE '\' OR id IN (SELECT transfer_id FROM files WHERE name LIKE ? ESCAPE '\')) ORDER BY created_at DESC,rowid DESC LIMIT 50 OFFSET ?`, userID, userID, "%"+search+"%", "%"+search+"%", offset)
 	if err != nil {
 		return nil, err
 	}

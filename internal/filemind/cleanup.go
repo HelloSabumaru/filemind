@@ -68,7 +68,33 @@ func (a *App) purge(ctx context.Context, transferID string, limit int) error {
 	}
 	_, err = a.store.db.ExecContext(ctx, `UPDATE transfers SET status='exhausted',closed_at=?,revision=revision+1 WHERE status='published'
  AND (?='' OR id=?) AND NOT EXISTS(SELECT 1 FROM files f WHERE f.transfer_id=transfers.id AND f.deleted=0)`, time.Now().Unix(), transferID, transferID)
-	return err
+	if err != nil {
+		return err
+	}
+	return a.removeDeletedTransfers(ctx, transferID, limit)
+}
+
+// Retain a deletion marker only until all payloads have been durably removed
+// and active downloads have released their reservations. This is also retried
+// by background cleanup and on startup, so a crash cannot orphan stored files.
+func (a *App) removeDeletedTransfers(ctx context.Context, transferID string, limit int) error {
+	tx, err := a.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	const candidates = `SELECT t.id FROM transfers t WHERE t.status='deleted'
+ AND (?='' OR t.id=?)
+ AND NOT EXISTS(SELECT 1 FROM files f INDEXED BY files_transfer WHERE f.transfer_id=t.id AND f.purged=0)
+ AND NOT EXISTS(SELECT 1 FROM reservations r JOIN files f ON f.id=r.file_id WHERE f.transfer_id=t.id)
+ ORDER BY t.rowid LIMIT ?`
+	if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE kind='share' AND transfer_id IN ("+candidates+")", transferID, transferID, limit); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM transfers WHERE id IN ("+candidates+")", transferID, transferID, limit); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *App) purgeTransfer(ctx context.Context, id string) error {

@@ -422,6 +422,10 @@ func (a *App) getTransfer(w http.ResponseWriter, r *http.Request) {
 		a.operationError(w, r, "read_transfer", e)
 		return
 	}
+	if t.Status == "deleted" {
+		notFound(w)
+		return
+	}
 	if adminRequest(r) {
 		t.OwnerID = t.UserID
 	}

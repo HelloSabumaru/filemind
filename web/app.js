@@ -578,7 +578,7 @@ async function transfersPage() {
         }
       }, "quiet danger"));
       actions.append(action("Delete", async () => {
-        if (confirm("Delete this transfer\u2019s stored files? This cannot be undone.")) {
+        if (confirm("Delete this transfer and all its files? This cannot be undone.")) {
           await api(`${transferBase}/${t.id}`, "DELETE");
           await load();
         }

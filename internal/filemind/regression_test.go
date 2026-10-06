@@ -537,7 +537,7 @@ func TestMaintenanceBoundsPurgeWorkAndSkipsCompletedFiles(t *testing.T) {
 	}
 	syncs := 0
 	a.syncFile = func(file *os.File) error { syncs++; return file.Sync() }
-	for _, expected := range []int{cleanupBatch, 600, 600} {
+	for _, expected := range []int{cleanupBatch, 0, 0} {
 		if err = a.cleanup(); err != nil {
 			t.Fatal(err)
 		}
