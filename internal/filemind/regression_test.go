@@ -239,7 +239,15 @@ func TestTransferRevisionsPreserveExpiryAndSerializePublication(t *testing.T) {
 	}()
 	wg.Wait()
 	if publishErr != nil {
-		t.Fatal(publishErr)
+		var p *problem
+		if !errors.As(publishErr, &p) || p.status != 409 {
+			t.Fatal(publishErr)
+		}
+		// An edit can now win while verification runs outside the global lock.
+		// Retrying must publish the updated settings, never the stale snapshot.
+		if _, err := a.publishTransfer(context.Background(), storedUser, transfer.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if editErr != nil {
 		var p *problem

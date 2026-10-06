@@ -128,7 +128,7 @@ func unknownPasswordKey(username string) string {
 	return tokenHash(strings.ToLower(strings.TrimSpace(username)))
 }
 
-// All password entry points share target counters and hash-pool protection.
+// All password entry points share target counters and bounded hashing.
 // Unknown usernames have an independent bounded pool, so they cannot evict
 // real account counters or consume the capacity reserved for known accounts.
 func (a *App) verifyCredential(r *http.Request, source *limiter, targets *passwordLimiter, key, hash, password string, eligible bool) (bool, error) {
@@ -140,16 +140,17 @@ func (a *App) verifyCredential(r *http.Request, source *limiter, targets *passwo
 		return false, &passwordThrottleError{retry}
 	}
 	defer check.cancel()
-	select {
-	case a.hashSlots <- struct{}{}:
-		defer func() { <-a.hashSlots }()
-	default:
-		return false, &problem{429, "Password verification busy. Try again shortly."}
+	user := userFromContext(r.Context())
+	userID := user.ID
+	if targets == a.accountPasswords && eligible {
+		userID = key
 	}
-	if err := r.Context().Err(); err != nil {
+	release, err := a.acquireHash(r.Context(), source == a.adminLimiter || user.IsAdmin, userID)
+	if err != nil {
 		return false, err
 	}
 	valid := verifyPassword(hash, password)
+	release()
 	if err := r.Context().Err(); err != nil {
 		return false, err
 	}

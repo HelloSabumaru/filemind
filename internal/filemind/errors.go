@@ -66,6 +66,10 @@ func (a *App) logFailure(operation string, err error, attrs ...any) {
 }
 
 func (a *App) operationError(w http.ResponseWriter, r *http.Request, operation string, err error) {
+	var busy *workBusyError
+	if errors.As(err, &busy) {
+		w.Header().Set("Retry-After", "1")
+	}
 	var throttle *passwordThrottleError
 	if errors.As(err, &throttle) {
 		w.Header().Set("Retry-After", strconv.Itoa(throttle.retry))

@@ -124,6 +124,16 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
+	input.Username = strings.TrimSpace(input.Username)
+	if !validUsername(input.Username) || !validAccountPassword(input.Password) || (input.StorageQuota != nil && *input.StorageQuota < 0) {
+		apiError(w, 400, "Check the username, password and quota.")
+		return
+	}
+	hash, err := a.hashNewPassword(r.Context(), userFromContext(r.Context()), true, input.Password)
+	if err != nil {
+		a.operationError(w, r, "create_account", err)
+		return
+	}
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	settings := a.settings()
@@ -131,21 +141,8 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 	if input.StorageQuota != nil {
 		quota = *input.StorageQuota
 	}
-	input.Username = strings.TrimSpace(input.Username)
-	if !validUsername(input.Username) || !validAccountPassword(input.Password) || quota < 0 || quota > settings.StorageQuota {
-		apiError(w, 400, "Check the username, password and quota.")
-		return
-	}
-	select {
-	case a.hashSlots <- struct{}{}:
-		defer func() { <-a.hashSlots }()
-	default:
-		apiError(w, 429, "Password verification busy.")
-		return
-	}
-	hash, err := hashPassword(input.Password)
-	if err != nil {
-		a.operationError(w, r, "create_account", err)
+	if quota > settings.StorageQuota {
+		apiError(w, 400, "Invalid storage quota.")
 		return
 	}
 	tx, err := a.store.db.BeginTx(r.Context(), nil)
@@ -231,14 +228,7 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 			}
 			verifiedAdmin = true
 		}
-		select {
-		case a.hashSlots <- struct{}{}:
-			defer func() { <-a.hashSlots }()
-		default:
-			apiError(w, 429, "Password verification busy.")
-			return
-		}
-		hash, err = hashPassword(*input.Password)
+		hash, err = a.hashNewPassword(r.Context(), userFromContext(r.Context()), true, *input.Password)
 		if err != nil {
 			a.operationError(w, r, "edit_account", err)
 			return

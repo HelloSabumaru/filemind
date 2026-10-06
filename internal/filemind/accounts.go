@@ -32,14 +32,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 403, "Current password is incorrect.")
 		return
 	}
-	select {
-	case a.hashSlots <- struct{}{}:
-		defer func() { <-a.hashSlots }()
-	default:
-		apiError(w, 429, "Password verification busy. Try again shortly.")
-		return
-	}
-	hash, err := hashPassword(input.NewPassword)
+	hash, err := a.hashNewPassword(r.Context(), user, user.IsAdmin, input.NewPassword)
 	if err != nil {
 		a.operationError(w, r, "change_password", err)
 		return

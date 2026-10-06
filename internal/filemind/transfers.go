@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/tus/tusd/v2/pkg/handler"
 )
 
 type transferPatch struct {
@@ -43,8 +46,6 @@ func (a *App) newDraft(ctx context.Context, user User, input newTransfer) (Trans
 	if err := a.store.reserveTransferCreation(ctx, user); err != nil {
 		return Transfer{}, err
 	}
-	a.settingsMu.Lock()
-	defer a.settingsMu.Unlock()
 	settings := a.settings()
 	var total int64
 	for _, f := range input.Files {
@@ -62,64 +63,104 @@ func (a *App) newDraft(ctx context.Context, user User, input newTransfer) (Trans
 	}
 	hash := ""
 	if input.Password != "" {
-		hash, err = a.transferPassword(input.Password)
+		hash, err = a.transferPassword(ctx, user, input.Password)
 		if err != nil {
 			return Transfer{}, err
 		}
 	}
-	id, err := a.store.create(ctx, user, input, hash, settings)
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	id, err := a.store.create(ctx, user, input, hash, a.settings())
 	if err != nil {
 		return Transfer{}, err
 	}
 	return a.store.transfer(ctx, id)
 }
 
-func (a *App) transferPassword(password string) (string, error) {
+func (a *App) transferPassword(ctx context.Context, user User, password string) (string, error) {
 	if password == "" {
 		return "", invalid("Enter a password.")
 	}
-	select {
-	case a.hashSlots <- struct{}{}:
-		defer func() { <-a.hashSlots }()
-	default:
-		return "", &problem{429, "Password verification busy. Try again shortly."}
-	}
-	return hashPassword(password)
+	return a.hashNewPassword(ctx, user, false, password)
 }
 
 func (a *App) publishTransfer(ctx context.Context, user User, id string) (Transfer, error) {
-	a.uploadMu.Lock()
-	defer a.uploadMu.Unlock()
-	t, err := a.transferForAccount(ctx, user, id, false)
+	release, err := a.acquireStorageWork(ctx, user.ID)
 	if err != nil {
+		return Transfer{}, err
+	}
+	defer release()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	a.uploadMu.Lock()
+	t, err := a.transferForAccount(ctx, user, id, false)
+	if err != nil || t.Status == "published" {
+		a.uploadMu.Unlock()
 		return t, err
 	}
-	if t.Status == "published" {
-		return t, nil
-	}
 	if t.Status != "draft" {
+		a.uploadMu.Unlock()
 		return t, conflict("Transfer cannot be published.")
 	}
-	for _, f := range t.Files {
+	ctx, end := a.activate(ctx, id, randomID())
+	a.uploadMu.Unlock()
+	defer end()
+	var locks []handler.Lock
+	defer func() {
+		for _, lock := range locks {
+			lock.Unlock()
+		}
+	}()
+	verified := make([]os.FileInfo, len(t.Files))
+	for i, f := range t.Files {
 		if !f.Started || f.Deleted {
 			return t, conflict("Finish all uploads before sharing.")
 		}
+		// Share the Tus locker with chunk writes. Waiting and hashing only
+		// affect this transfer, and an admin can cancel them immediately.
+		lock, e := a.uploadLocker.NewLock(f.ID)
+		if e != nil {
+			return t, e
+		}
+		if e = lock.Lock(ctx, cancel); e != nil {
+			if ctx.Err() != nil {
+				return t, ctx.Err()
+			}
+			return t, conflict("File is busy. Pause uploads and retry.")
+		}
+		locks = append(locks, lock)
 		if !f.Uploaded {
-			if err = a.finalizeUpload(ctx, user, f.ID); err != nil {
+			if verified[i], err = a.finalizePayload(ctx, user, f.ID); err != nil {
 				return t, err
 			}
 		}
-		// Even previously verified files must be intact and synchronized at the
-		// publication boundary. A previous uploaded flag never skips durability.
 		info, e := a.root.Stat(f.ID)
 		if e != nil {
 			return t, e
+		}
+		if !f.Uploaded && (!os.SameFile(verified[i], info) || !info.ModTime().Equal(verified[i].ModTime())) {
+			return t, conflict("Stored file changed after verification. Retry publication.")
 		}
 		if !info.Mode().IsRegular() || info.Size() != f.Size {
 			return t, conflict("Stored file length mismatch.")
 		}
 		if err = a.syncUpload(f.ID); err != nil {
 			return t, err
+		}
+		verified[i] = info
+	}
+	if err = ctx.Err(); err != nil {
+		return t, err
+	}
+	a.uploadMu.Lock()
+	defer a.uploadMu.Unlock()
+	for i, f := range t.Files {
+		info, e := a.root.Stat(f.ID)
+		if e != nil {
+			return t, e
+		}
+		if !os.SameFile(verified[i], info) || info.Size() != verified[i].Size() || !info.ModTime().Equal(verified[i].ModTime()) {
+			return t, conflict("Stored file changed. Retry publication.")
 		}
 	}
 	tx, err := a.store.db.BeginTx(ctx, nil)
@@ -129,6 +170,13 @@ func (a *App) publishTransfer(ctx context.Context, user User, id string) (Transf
 	defer tx.Rollback()
 	if err = currentAccount(ctx, tx, user, false); err != nil {
 		return t, err
+	}
+	var ready int
+	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM files WHERE transfer_id=? AND started=1 AND uploaded=1 AND deleted=0", id).Scan(&ready); err != nil {
+		return t, err
+	}
+	if ready != len(t.Files) {
+		return t, conflict("Uploads changed. Finish all files before sharing.")
 	}
 	now := time.Now().Unix()
 	expiry := int64(0)
@@ -161,13 +209,18 @@ func (a *App) updateTransfer(ctx context.Context, user User, id string, input tr
 	var hash string
 	var err error
 	if input.Password != nil && *input.Password != "" {
-		hash, err = a.transferPassword(*input.Password)
+		hash, err = a.transferPassword(ctx, user, *input.Password)
 		if err != nil {
 			return Transfer{}, err
 		}
 	}
 	a.uploadMu.Lock()
-	defer a.uploadMu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			a.uploadMu.Unlock()
+		}
+	}()
 	t, err := a.transferForAccount(ctx, user, id, admin)
 	if err != nil {
 		return t, err
@@ -238,6 +291,8 @@ func (a *App) updateTransfer(ctx context.Context, user User, id string, input tr
 	if input.Password != nil {
 		a.transferPasswords.reset(id)
 	}
+	a.uploadMu.Unlock()
+	locked = false
 	if err = a.purgeTransfer(ctx, id); err != nil {
 		a.logFailure("purge_transfer", err, "transfer_id", id)
 	}

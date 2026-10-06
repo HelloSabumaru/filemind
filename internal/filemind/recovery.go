@@ -98,7 +98,7 @@ func (a *App) recover() error {
 			}
 		}
 		if info.Size() == f.Size {
-			digest, verifyErr := a.verifyPayload(context.Background(), f)
+			digest, _, verifyErr := a.verifyPayload(context.Background(), f)
 			if verifyErr != nil {
 				if _, err = a.store.db.Exec("UPDATE files SET uploaded=0,integrity_error='Stored file could not be verified. Restart the upload or delete this transfer.' WHERE id=?", f.ID); err != nil {
 					return err

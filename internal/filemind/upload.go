@@ -21,22 +21,49 @@ type uploadStore struct {
 	base filestore.FileStore
 }
 
-func (s uploadStore) NewUpload(ctx context.Context, info handler.FileInfo) (handler.Upload, error) {
-	s.app.uploadMu.Lock()
-	defer s.app.uploadMu.Unlock()
-	tx, err := s.app.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
+func tusWorkError(err error) error {
+	var p *problem
+	if !errors.As(err, &p) {
+		return err
 	}
-	defer tx.Rollback()
-	var started, deleted bool
-	var state string
-	var size int64
+	result := handler.NewError("UPLOAD_UNAVAILABLE", p.message, p.status)
+	var busy *workBusyError
+	if errors.As(err, &busy) {
+		result.HTTPResponse.Header["Retry-After"] = "1"
+	}
+	return result
+}
+
+func (s uploadStore) NewUpload(ctx context.Context, info handler.FileInfo) (_ handler.Upload, err error) {
 	user := userFromContext(ctx)
-	err = tx.QueryRowContext(ctx, "SELECT f.started,f.deleted,f.size,t.status FROM files f JOIN transfers t ON t.id=f.transfer_id JOIN users u ON u.id=t.user_id WHERE f.id=? AND u.id=? AND u.disabled=0 AND u.archived=0 AND u.auth_version=?", info.ID, user.ID, user.AuthVersion).Scan(&started, &deleted, &size, &state)
+	release, err := s.app.acquireStorageWork(ctx, user.ID)
+	if err != nil {
+		return nil, tusWorkError(err)
+	}
+	defer release()
+	var started, deleted bool
+	var state, transferID string
+	var size, revision int64
+	s.app.uploadMu.Lock()
+	err = s.app.store.db.QueryRowContext(ctx, "SELECT f.started,f.deleted,f.size,t.status,t.id,t.revision FROM files f JOIN transfers t ON t.id=f.transfer_id JOIN users u ON u.id=t.user_id WHERE f.id=? AND u.id=? AND u.disabled=0 AND u.archived=0 AND u.auth_version=?", info.ID, user.ID, user.AuthVersion).Scan(&started, &deleted, &size, &state, &transferID, &revision)
 	if err != nil || started || deleted || state != "draft" || info.Size != size {
+		s.app.uploadMu.Unlock()
 		return nil, handler.NewError("UPLOAD_UNAVAILABLE", "Upload unavailable", 409)
 	}
+	ctx, end := s.app.activate(ctx, transferID, randomID())
+	s.app.uploadMu.Unlock()
+	defer end()
+	// The per-user lease prevents another creation/restart from replacing these
+	// paths until failed work has removed its own files.
+	defer func() {
+		if err != nil {
+			for _, name := range []string{info.ID, info.ID + ".info"} {
+				if e := s.app.root.Remove(name); e != nil && !errors.Is(e, os.ErrNotExist) {
+					s.app.logFailure("rollback_upload_creation", e, "file_id", info.ID)
+				}
+			}
+		}
+	}()
 	space, e := freeSpace(s.app.cfg.DataDir)
 	if e != nil || space-size < s.app.cfg.MinFreeSpace {
 		return nil, handler.NewError("STORAGE_FULL", "Insufficient free disk space", 507)
@@ -49,32 +76,49 @@ func (s uploadStore) NewUpload(ctx context.Context, info handler.FileInfo) (hand
 		err = s.app.syncUpload(info.ID + ".info")
 	}
 	if err == nil {
-		var dir *os.File
-		dir, err = s.app.root.Open(".")
-		if err == nil {
-			err = dir.Sync()
-			dir.Close()
-		}
-	}
-	if err != nil {
-		s.app.root.Remove(info.ID)
-		s.app.root.Remove(info.ID + ".info")
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE files SET started=1 WHERE id=?", info.ID)
-	if err == nil {
-		_, err = tx.ExecContext(ctx, "UPDATE transfers SET touched_at=? WHERE id=(SELECT transfer_id FROM files WHERE id=?)", time.Now().Unix(), info.ID)
+		err = s.app.syncUpload(".")
 	}
 	if err == nil {
-		err = tx.Commit()
+		err = ctx.Err()
 	}
 	if err != nil {
-		s.app.root.Remove(info.ID)
-		s.app.root.Remove(info.ID + ".info")
 		return nil, err
+	}
+	if err = s.app.commitUploadStart(ctx, user, info.ID, transferID, revision); err != nil {
+		return nil, tusWorkError(err)
 	}
 	return &durableUpload{Upload: u, app: s.app, id: info.ID}, nil
 }
+
+func (a *App) commitUploadStart(ctx context.Context, user User, fileID, transferID string, revision int64) error {
+	a.uploadMu.Lock()
+	defer a.uploadMu.Unlock()
+	tx, err := a.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = currentAccount(ctx, tx, user, false); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE files SET started=1 WHERE id=? AND started=0 AND deleted=0 AND transfer_id IN
+ (SELECT id FROM transfers WHERE id=? AND user_id=? AND revision=? AND status='draft')`, fileID, transferID, user.ID, revision)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return conflict("Transfer changed while creating the upload. Refresh and retry.")
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE transfers SET touched_at=? WHERE id=?", time.Now().Unix(), transferID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s uploadStore) GetUpload(ctx context.Context, id string) (handler.Upload, error) {
 	if !validID(id) {
 		return nil, handler.ErrNotFound
@@ -121,7 +165,7 @@ func (u *durableUpload) FinishUpload(ctx context.Context) error {
 	if err != nil {
 		var p *problem
 		if errors.As(err, &p) {
-			return handler.NewError("UPLOAD_INVALID", p.message, p.status)
+			return tusWorkError(err)
 		}
 		return handler.NewError("UPLOAD_UNAVAILABLE", "Upload could not be verified. Retry when storage is available.", 503)
 	}
@@ -155,7 +199,8 @@ func (a *App) initializeUploads() error {
 	base := filestore.New(filepath.Join(a.cfg.DataDir, "uploads"))
 	composer := handler.NewStoreComposer()
 	composer.UseCore(uploadStore{a, base})
-	memorylocker.New().UseIn(composer)
+	a.uploadLocker = memorylocker.New()
+	composer.UseLocker(a.uploadLocker)
 	config := handler.Config{
 		// Drafts reserve validated sizes, so older drafts can finish after size limits change.
 		StoreComposer: composer, BasePath: strings.TrimRight(a.cfg.OwnerURL, "/") + "/uploads/", DisableDownload: true, DisableTermination: true, DisableConcatenation: true,
@@ -192,6 +237,14 @@ func (a *App) initializeUploads() error {
 }
 
 func (a *App) upload(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost || r.Method == http.MethodPatch {
+		release, err := a.uploadUsers.acquire(userFromContext(r.Context()).ID)
+		if err != nil {
+			a.operationError(w, r, "upload_work", err)
+			return
+		}
+		defer release()
+	}
 	uploadHandler := a.uploadHandler
 	if adminRequest(r) {
 		uploadHandler = a.adminUploadHandler

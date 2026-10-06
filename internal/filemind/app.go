@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/tus/tusd/v2/pkg/handler"
 )
 
 type App struct {
@@ -35,6 +37,11 @@ type App struct {
 	unknownPasswords   *passwordLimiter
 	transferPasswords  *passwordLimiter
 	hashSlots          chan struct{}
+	adminHashSlots     chan struct{}
+	hashUsers          *userWorkLimit
+	integrityUsers     *userWorkLimit
+	uploadUsers        *userWorkLimit
+	uploadLocker       handler.Locker
 	downloadSlots      chan struct{}
 	integritySlots     chan struct{}
 	syncFile           func(*os.File) error
@@ -86,6 +93,8 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 		return nil, errors.New("data directory is already in use")
 	}
 	a := &App{cfg: cfg, lock: lock, logger: logger, hashSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, 8), integritySlots: make(chan struct{}, 2), active: make(map[string]map[string]context.CancelFunc), limiter: newLimiter(), ownerLimiter: newLimiter(), adminLimiter: newLimiter()}
+	a.adminHashSlots = make(chan struct{}, 1)
+	a.hashUsers, a.integrityUsers, a.uploadUsers = newUserWorkLimit(1), newUserWorkLimit(1), newUserWorkLimit(2)
 	a.accountPasswords, a.unknownPasswords, a.transferPasswords = newPasswordLimiter(), newPasswordLimiter(), newPasswordLimiter()
 	defer func() {
 		if err != nil {
