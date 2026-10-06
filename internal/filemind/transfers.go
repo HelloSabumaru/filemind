@@ -40,6 +40,9 @@ func (a *App) transferForAccount(ctx context.Context, user User, id string, admi
 }
 
 func (a *App) newDraft(ctx context.Context, user User, input newTransfer) (Transfer, error) {
+	if err := a.store.reserveTransferCreation(ctx, user); err != nil {
+		return Transfer{}, err
+	}
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	settings := a.settings()

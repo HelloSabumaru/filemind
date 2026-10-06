@@ -301,24 +301,8 @@ func (s *Store) create(ctx context.Context, user User, input newTransfer, hash s
 	if err != nil || disabled || version != user.AuthVersion {
 		return "", &problem{401, "Account unavailable; sign in again."}
 	}
-	var used, count int64
-	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(size),0) FROM files WHERE deleted=0").Scan(&used); err != nil {
+	if err = enforceTransferLimits(ctx, tx, user.ID, len(input.Files), total, quota, settings.StorageQuota); err != nil {
 		return "", err
-	}
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM transfers WHERE status IN ('draft','published','revoked')").Scan(&count); err != nil {
-		return "", err
-	}
-	if total > settings.StorageQuota-used || count >= 1000 {
-		return "", conflict("Storage quota or transfer limit reached.")
-	}
-	if quota > 0 {
-		var userUsed int64
-		if err = tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(f.size),0) FROM files f JOIN transfers t ON t.id=f.transfer_id WHERE t.user_id=? AND f.deleted=0", user.ID).Scan(&userUsed); err != nil {
-			return "", err
-		}
-		if total > quota-userUsed {
-			return "", conflict("Account storage quota reached.")
-		}
 	}
 	id := randomID()
 	title := strings.TrimSpace(input.Title)

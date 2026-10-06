@@ -126,8 +126,15 @@ func (a *App) cleanup() (err error) {
 	if err = a.purge(ctx, "", cleanupBatch); err != nil {
 		return err
 	}
-	_, err = a.store.db.Exec(`DELETE FROM transfers WHERE id IN (SELECT id FROM transfers WHERE closed_at>0 AND closed_at<?
- AND NOT EXISTS(SELECT 1 FROM files f WHERE f.transfer_id=transfers.id AND f.purged=0) LIMIT 100)`, now-30*86400)
+	tx, err := a.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = pruneTransferHistory(ctx, tx, "", transferHistoryBatch, 0, now-30*86400)
+	if err == nil {
+		err = tx.Commit()
+	}
 	if err != nil {
 		return err
 	}

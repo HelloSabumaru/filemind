@@ -130,7 +130,7 @@ func (a *App) archiveAccount(ctx context.Context, actor User, id string) error {
 		_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", id)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key=?", preferencesKey(id))
+		_, err = tx.ExecContext(ctx, "DELETE FROM settings WHERE key IN (?,?)", preferencesKey(id), creationRateKey(id))
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, "UPDATE transfers SET status='deleted',closed_at=?,auth_version=auth_version+1,revision=revision+1 WHERE user_id=?", time.Now().Unix(), id)

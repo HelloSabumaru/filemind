@@ -367,6 +367,10 @@ func (a *App) createTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := a.newDraft(r.Context(), userFromContext(r.Context()), input)
 	if err != nil {
+		var rate *transferCreationRateError
+		if errors.As(err, &rate) {
+			w.Header().Set("Retry-After", strconv.FormatInt(rate.retryAfter, 10))
+		}
 		a.operationError(w, r, "create_transfer", err)
 		return
 	}
