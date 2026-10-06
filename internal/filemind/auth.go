@@ -85,44 +85,80 @@ func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
 	return user, err
 }
 
-func (a *App) grantSession(w http.ResponseWriter, kind string, t Transfer, user User) error {
-	token := randomToken()
+const maxSessionsPerKind = 10000
+
+func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, t Transfer, user User) error {
+	if kind == "share" && t.PasswordHash == "" {
+		return nil
+	}
 	lifetime := time.Hour
 	name := a.cookieName("share-" + t.ID)
 	path := "/s/" + t.ShareToken
-	if kind == "owner" || kind == "admin" {
+	switch kind {
+	case "owner", "admin":
 		lifetime = 24 * time.Hour
 		name = a.cookieName(sessionCookie(kind))
 		path = "/"
+	case "share":
+	default:
+		return errors.New("invalid session kind")
 	}
-	tx, err := a.store.db.Begin()
+	previous := ""
+	if cookie, err := r.Cookie(name); err == nil && validToken(cookie.Value) {
+		previous = tokenHash(cookie.Value)
+	}
+	now := time.Now().Unix()
+	tx, err := a.store.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("DELETE FROM sessions WHERE expires_at<=?", time.Now().Unix()); err != nil {
+	if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE kind=? AND expires_at<=?", kind, now); err != nil {
 		return err
-	}
-	var count int
-	if err = tx.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&count); err != nil {
-		return err
-	}
-	if count >= 10000 {
-		return errors.New("session capacity reached")
 	}
 	var userID any
 	version := t.AuthVersion
 	if kind == "owner" || kind == "admin" {
+		if err = currentAccount(r.Context(), tx, user, kind == "admin"); err != nil {
+			return err
+		}
+		userID, version = user.ID, user.AuthVersion
+		// A new sign-in rotates this browser's cookie and retires its old session.
+		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=? AND kind=?", previous, kind); err != nil {
+			return err
+		}
+	} else {
 		var active int
-		if err = tx.QueryRow("SELECT COUNT(*) FROM users WHERE id=? AND auth_version=? AND disabled=0 AND archived=0 AND (? != 'admin' OR is_admin=1)", user.ID, user.AuthVersion, kind).Scan(&active); err != nil {
+		if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM transfers WHERE id=? AND status='published' AND auth_version=? AND password_hash=? AND (expires_at=0 OR expires_at>?)", t.ID, t.AuthVersion, t.PasswordHash, now).Scan(&active); err != nil {
 			return err
 		}
 		if active != 1 {
-			return errors.New("account changed; sign in again")
+			return conflict("Transfer changed; refresh and retry.")
 		}
-		userID, version = user.ID, user.AuthVersion
+		var reusable int
+		if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sessions WHERE token_hash=? AND kind='share' AND transfer_id=? AND auth_version=? AND expires_at>?", previous, t.ID, t.AuthVersion, now).Scan(&reusable); err != nil {
+			return err
+		}
+		if reusable == 1 {
+			return tx.Commit()
+		}
+		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=? AND kind='share' AND transfer_id=?", previous, t.ID); err != nil {
+			return err
+		}
 	}
-	_, err = tx.Exec("INSERT INTO sessions(token_hash,kind,user_id,transfer_id,auth_version,expires_at) VALUES(?,?,?,?,?,?)", tokenHash(token), kind, userID, t.ID, version, time.Now().Add(lifetime).Unix())
+	var count int
+	if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sessions WHERE kind=?", kind).Scan(&count); err != nil {
+		return err
+	}
+	if count >= maxSessionsPerKind {
+		message := "Sign-in session limit reached. Try again later."
+		if kind == "share" {
+			message = "Download session limit reached. Try again later."
+		}
+		return &problem{http.StatusServiceUnavailable, message}
+	}
+	token := randomToken()
+	_, err = tx.ExecContext(r.Context(), "INSERT INTO sessions(token_hash,kind,user_id,transfer_id,auth_version,expires_at) VALUES(?,?,?,?,?,?)", tokenHash(token), kind, userID, t.ID, version, now+int64(lifetime.Seconds()))
 	if err != nil {
 		return err
 	}

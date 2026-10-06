@@ -280,7 +280,7 @@ func (a *App) login(kind string) http.HandlerFunc {
 			apiError(w, 401, "Incorrect username or password.")
 			return
 		}
-		if err := a.grantSession(w, kind, Transfer{}, user); err != nil {
+		if err := a.grantSession(w, r, kind, Transfer{}, user); err != nil {
 			a.operationError(w, r, "sign_in", err)
 			return
 		}
@@ -444,21 +444,23 @@ func (a *App) unlock(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	if t.PasswordHash != "" {
-		select {
-		case a.hashSlots <- struct{}{}:
-			defer func() { <-a.hashSlots }()
-		default:
-			apiError(w, 429, "Password verification busy.")
-			return
-		}
-		if !verifyPassword(t.PasswordHash, input.Password) {
-			a.limiter.fail(a.clientIP(r))
-			apiError(w, 403, "Incorrect password.")
-			return
-		}
+	if t.PasswordHash == "" {
+		writeJSON(w, map[string]bool{"ok": true})
+		return
 	}
-	if err = a.grantSession(w, "share", t, User{}); err != nil {
+	select {
+	case a.hashSlots <- struct{}{}:
+		defer func() { <-a.hashSlots }()
+	default:
+		apiError(w, 429, "Password verification busy.")
+		return
+	}
+	if !verifyPassword(t.PasswordHash, input.Password) {
+		a.limiter.fail(a.clientIP(r))
+		apiError(w, 403, "Incorrect password.")
+		return
+	}
+	if err = a.grantSession(w, r, "share", t, User{}); err != nil {
 		a.operationError(w, r, "authorize_download", err)
 		return
 	}

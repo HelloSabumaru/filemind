@@ -297,6 +297,35 @@ test("unrelated edits preserve expiry and a rejected edit stays open", async t =
   assert.equal(await page.locator("#edit-form [name=title]").inputValue(),"Stale edit");
 });
 
+test("protected links unlock through the form and reuse the existing download session", async t => {
+  const page = await login(t);
+  await select(page,"protected-browser.txt",Buffer.from("protected download"));
+  await page.locator("#upload-form [name=password]").fill("secret");
+  await page.getByRole("button",{name:"Upload",exact:true}).click();
+  const share = await publishedResult(page);
+  const recipient = await browser.newPage({acceptDownloads:true}); t.after(() => recipient.close());
+  await recipient.goto(share);
+  await recipient.getByRole("heading",{name:"Password-protected transfer",exact:true}).waitFor();
+  assert.equal(await recipient.locator(".download-link").count(),0);
+  await recipient.locator("#unlock-form [name=password]").fill("wrong");
+  await recipient.getByRole("button",{name:"Unlock",exact:true}).click();
+  await recipient.getByText("Incorrect password.",{exact:true}).waitFor();
+  await recipient.locator("#unlock-form [name=password]").fill("secret");
+  await recipient.getByRole("button",{name:"Unlock",exact:true}).click();
+  await recipient.locator(".file-description strong",{hasText:"protected-browser.txt"}).waitFor();
+  const before = (await recipient.context().cookies(share)).find(cookie => cookie.name.startsWith("filemind-share-"));
+  assert.ok(before,"unlock did not create a download session");
+  assert.equal((await api(recipient,`${new URL(share).pathname}/unlock`,"POST",{password:"secret"})).status,200);
+  const after = (await recipient.context().cookies(share)).find(cookie => cookie.name === before.name);
+  assert.equal(after.value,before.value);
+  assert.equal(after.expires,before.expires);
+  const downloaded = recipient.waitForEvent("download");
+  await recipient.locator(".download-link").first().click();
+  const download = await downloaded;
+  assert.equal(await download.failure(),null);
+  assert.equal(await readFile(await download.path(),"utf8"),"protected download");
+});
+
 test("actual download errors offer a return link instead of a JSON page", async t => {
   const page = await login(t);
   await select(page,"revoked-browser.txt",Buffer.from("download"));
