@@ -58,10 +58,10 @@ try {
       FILEMIND_DATA_DIR: join(local, 'data-v2'),
       FILEMIND_OWNER_PASSWORD_FILE: passwordFile,
     });
-    console.log('FileMind demo: http://localhost:9080/upload');
-    console.log('Private admin: http://localhost:9082/admin/users');
-    console.log('Login: admin. Initial password is in .local/owner-password.');
-    console.log('Demo upload account: user.');
+    console.log('Uploads: http://localhost:9080/login — initial demo login: user / password.');
+    console.log('Admin: http://localhost:9082/login — initial admin login: admin / password.');
+    console.log('Administrator sign-in also works on port 9080. Production can restrict it with FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN=true.');
+    console.log('Initial administrator password is in .local/owner-password; later account changes persist.');
     console.log('Test data persists in .local/data-v2. Press Ctrl+C to stop.');
     process.exitCode = await run(binary, [], env);
   }

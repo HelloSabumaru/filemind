@@ -207,7 +207,7 @@ func TestPasswordIPLimitDoesNotBlockExistingSessionsOrOtherSurfaces(t *testing.T
 }
 
 func TestAdminCredentialsAndLegacyOwnerSessionsArePrivate(t *testing.T) {
-	a := testApp(t)
+	a := restartWithAdminSignInPolicy(t, testApp(t), true)
 	if verifyPassword(a.loginDummyHash, "owner-password-for-validation") {
 		t.Fatal("public dummy verification uses the administrator's credential")
 	}

@@ -20,6 +20,7 @@ type Config struct {
 	DefaultDownloadLimit, MaxFileSize, MaxTransferSize, StorageQuota, MinFreeSpace int64
 	Development                                                                    bool
 	Demo                                                                           bool
+	RequirePrivateAdminSignIn                                                      bool
 	TrustedProxies                                                                 []netip.Prefix
 }
 
@@ -31,6 +32,9 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if c.Demo, err = strconv.ParseBool(env("FILEMIND_DEMO", "false")); err != nil {
 		return c, errors.New("invalid FILEMIND_DEMO")
+	}
+	if c.RequirePrivateAdminSignIn, err = strconv.ParseBool(env("FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN", "false")); err != nil {
+		return c, errors.New("invalid FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN")
 	}
 	if c.DefaultExpiry, err = time.ParseDuration(env("FILEMIND_DEFAULT_EXPIRY", "24h")); err != nil || c.DefaultExpiry < 0 {
 		return c, errors.New("invalid FILEMIND_DEFAULT_EXPIRY")

@@ -68,6 +68,12 @@ async function stopServer(signal) {
   try { await stopped; } finally { clearTimeout(timeout); }
 }
 
+async function restartWithAdminSignInPolicy(privateOnly) {
+  await stopServer("SIGTERM");
+  serverEnv.FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN = String(privateOnly);
+  await startServer();
+}
+
 after(async () => {
   await browser?.close();
   await stopServer("SIGTERM");
@@ -543,42 +549,84 @@ test("an abrupt process crash preserves links and unfinished uploads", {timeout:
   assert.equal(digest(Buffer.from(await response.arrayBuffer())),digest(payload));
 });
 
-test("private admin uploads resume while administrator credentials fail on the public upload listener", async t => {
-  const page = await login(t,true);
-  const publicSignIn = await page.context().newPage();
-  await publicSignIn.goto(`${ownerURL}/login`);
-  await publicSignIn.locator("[name=username]").fill("admin");
-  await publicSignIn.locator("[name=password]").fill(adminPassword);
-  await publicSignIn.getByRole("button",{name:"Sign in",exact:true}).click();
-  await publicSignIn.getByText("Incorrect username or password.",{exact:true}).waitFor();
-  assert.equal((await api(publicSignIn,"/api/transfers")).status,401);
-  const main = page.getByRole("navigation",{name:"Main",exact:true});
-  await main.getByRole("link",{name:"Upload",exact:true}).click(); await readyUpload(page);
-  const payload = Buffer.alloc(128*1024+13,"a");
-  const draft = await partialDraft(page,"private-admin-resume.txt",payload,17);
-  await main.getByRole("link",{name:"Transfers",exact:true}).click();
-  const card = page.locator(".transfer-card").filter({hasText:"private-admin-resume.txt"});
-  await card.getByRole("link",{name:"Resume upload",exact:true}).click(); await readyUpload(page);
-  assert.equal(new URL(page.url()).pathname,"/admin/upload");
-  await select(page,"private-admin-resume.txt",payload);
-  await page.getByRole("button",{name:"Resume",exact:true}).click();
-  const share = await publishedResult(page);
-  const stored = (await api(page,`/admin/api/personal/transfers/${draft.id}`)).body;
-  const response = await fetch(`${share}/files/${stored.files[0].id}`);
-  assert.equal(response.status,200);
-  assert.deepEqual(Buffer.from(await response.arrayBuffer()),payload);
-  await page.locator("#new-upload").click(); await readyUpload(page);
-  assert.equal(page.url(),`${adminURL}/admin/upload`);
-  const cancelled = await partialDraft(page,"private-admin-cancel.txt",Buffer.from("cancel"),1);
-  await page.goto(`${adminURL}/admin/upload?resume=${cancelled.id}`); await readyUpload(page);
-  page.once("dialog",dialog => dialog.accept());
-  await page.locator("#cancel-upload").click();
-  await page.waitForURL(`${adminURL}/admin/upload`); await readyUpload(page);
-  assert.equal((await api(page,`/admin/api/personal/transfers/${cancelled.id}`)).body.status,"deleted");
-  await main.getByRole("link",{name:"Admin",exact:true}).click();
-  await page.getByRole("navigation",{name:"Admin",exact:true}).getByRole("link",{name:"All transfers",exact:true}).click();
-  await page.locator(".transfer-card").filter({hasText:"private-admin-resume.txt"}).waitFor();
-  assert.equal(new URL(page.url()).origin,adminURL);
+test("main admin sign-in follows deployment configuration across restarts", async t => {
+  const mainAdmin = await login(t,false,"admin",adminPassword);
+  const adminLink = mainAdmin.getByRole("navigation",{name:"Main",exact:true}).getByRole("link",{name:"Admin",exact:true});
+  const destination = new URL(await adminLink.getAttribute("href"));
+  assert.equal(destination.origin,adminURL);
+  assert.equal(destination.pathname,"/admin/users");
+  await adminLink.click();
+  await mainAdmin.waitForURL(`${adminURL}/login`);
+  await mainAdmin.locator("[name=username]").fill("admin");
+  await mainAdmin.locator("[name=password]").fill(adminPassword);
+  await mainAdmin.getByRole("button",{name:"Sign in",exact:true}).click();
+  await mainAdmin.waitForURL(`${adminURL}/admin/users`);
+  const owner = await mainAdmin.context().newPage();
+  await owner.goto(`${ownerURL}/transfers`);
+  const ordinary = await login(t);
+  try {
+    await restartWithAdminSignInPolicy(true);
+    assert.equal((await api(owner,"/api/transfers")).status,401);
+    assert.equal((await api(ordinary,"/api/transfers")).status,200);
+    assert.equal((await api(mainAdmin,"/admin/api/users")).status,200);
+    await mainAdmin.getByRole("link",{name:"Server settings",exact:true}).click();
+    await mainAdmin.locator("#settings-storage").getByText("reserved",{exact:false}).waitFor();
+    assert.equal(await mainAdmin.getByRole("checkbox",{name:"Require private admin sign-in",exact:true}).count(),0);
+    await mainAdmin.getByRole("button",{name:"Save",exact:true}).click();
+    await mainAdmin.getByText("Settings saved.",{exact:true}).waitFor();
+    await owner.goto(`${ownerURL}/login`);
+    await owner.locator("[name=username]").fill("admin");
+    await owner.locator("[name=password]").fill(adminPassword);
+    await owner.getByRole("button",{name:"Sign in",exact:true}).click();
+    await owner.getByText("Incorrect username or password.",{exact:true}).waitFor();
+  } finally {
+    await restartWithAdminSignInPolicy(false);
+  }
+  await owner.getByRole("button",{name:"Sign in",exact:true}).click();
+  await owner.waitForURL(`${ownerURL}/upload`); await readyUpload(owner);
+});
+
+test("private-only mode supports private admin upload resume and blocks main admin sign-in", async t => {
+  await restartWithAdminSignInPolicy(true);
+  try {
+    const page = await login(t,true);
+    const publicSignIn = await page.context().newPage();
+    await publicSignIn.goto(`${ownerURL}/login`);
+    await publicSignIn.locator("[name=username]").fill("admin");
+    await publicSignIn.locator("[name=password]").fill(adminPassword);
+    await publicSignIn.getByRole("button",{name:"Sign in",exact:true}).click();
+    await publicSignIn.getByText("Incorrect username or password.",{exact:true}).waitFor();
+    assert.equal((await api(publicSignIn,"/api/transfers")).status,401);
+    const main = page.getByRole("navigation",{name:"Main",exact:true});
+    await main.getByRole("link",{name:"Upload",exact:true}).click(); await readyUpload(page);
+    const payload = Buffer.alloc(128*1024+13,"a");
+    const draft = await partialDraft(page,"private-admin-resume.txt",payload,17);
+    await main.getByRole("link",{name:"Transfers",exact:true}).click();
+    const card = page.locator(".transfer-card").filter({hasText:"private-admin-resume.txt"});
+    await card.getByRole("link",{name:"Resume upload",exact:true}).click(); await readyUpload(page);
+    assert.equal(new URL(page.url()).pathname,"/admin/upload");
+    await select(page,"private-admin-resume.txt",payload);
+    await page.getByRole("button",{name:"Resume",exact:true}).click();
+    const share = await publishedResult(page);
+    const stored = (await api(page,`/admin/api/personal/transfers/${draft.id}`)).body;
+    const response = await fetch(`${share}/files/${stored.files[0].id}`);
+    assert.equal(response.status,200);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()),payload);
+    await page.locator("#new-upload").click(); await readyUpload(page);
+    assert.equal(page.url(),`${adminURL}/admin/upload`);
+    const cancelled = await partialDraft(page,"private-admin-cancel.txt",Buffer.from("cancel"),1);
+    await page.goto(`${adminURL}/admin/upload?resume=${cancelled.id}`); await readyUpload(page);
+    page.once("dialog",dialog => dialog.accept());
+    await page.locator("#cancel-upload").click();
+    await page.waitForURL(`${adminURL}/admin/upload`); await readyUpload(page);
+    assert.equal((await api(page,`/admin/api/personal/transfers/${cancelled.id}`)).body.status,"deleted");
+    await main.getByRole("link",{name:"Admin",exact:true}).click();
+    await page.getByRole("navigation",{name:"Admin",exact:true}).getByRole("link",{name:"All transfers",exact:true}).click();
+    await page.locator(".transfer-card").filter({hasText:"private-admin-resume.txt"}).waitFor();
+    assert.equal(new URL(page.url()).origin,adminURL);
+  } finally {
+    await restartWithAdminSignInPolicy(false);
+  }
 });
 
 test("administrator password changes require the current password through Users and Settings", async t => {

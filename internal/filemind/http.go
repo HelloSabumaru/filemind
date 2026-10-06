@@ -283,7 +283,7 @@ func (a *App) login(kind string) http.HandlerFunc {
 			a.operationError(w, r, "sign_in", err)
 			return
 		}
-		eligible := err == nil && !user.Disabled && ((kind == "admin" && user.IsAdmin) || (kind == "owner" && !user.IsAdmin))
+		eligible := err == nil && !user.Disabled && ((kind == "admin" && user.IsAdmin) || (kind == "owner" && (!user.IsAdmin || !a.cfg.RequirePrivateAdminSignIn)))
 		hash, key, targets := a.loginDummyHash, unknownPasswordKey(input.Username), a.unknownPasswords
 		if eligible {
 			hash, key, targets = user.PasswordHash, user.ID, a.accountPasswords
