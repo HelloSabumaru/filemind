@@ -56,7 +56,17 @@ func validUsername(username string) bool {
 }
 
 func (a *App) adminAPI(next http.HandlerFunc) http.HandlerFunc {
-	return a.accountAPI("admin", next)
+	return a.adminAccountAPI("admin", next)
+}
+
+func (a *App) adminAccountAPI(kind string, next http.HandlerFunc) http.HandlerFunc {
+	return a.accountAPI(kind, func(w http.ResponseWriter, r *http.Request) {
+		if !userFromContext(r.Context()).IsAdmin {
+			notFound(w)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func (a *App) transferAPI(next http.HandlerFunc) http.HandlerFunc {
@@ -210,7 +220,7 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if isAdmin {
 			actor := userFromContext(r.Context())
-			valid, err := a.verifyCredential(r, a.adminLimiter, a.accountPasswords, actor.ID, actor.PasswordHash, input.CurrentPassword, true)
+			valid, err := a.verifyCredential(r, a.accountPasswordLimiter(r), a.accountPasswords, actor.ID, actor.PasswordHash, input.CurrentPassword, true)
 			if err != nil {
 				a.operationError(w, r, "edit_account", err)
 				return

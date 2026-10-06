@@ -18,7 +18,7 @@
     <a data-app-link href="{{$uploadPath}}" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
     <a data-app-link href="{{$transfersPath}}" {{if and (not .AllTransfers) (eq .Page "transfers")}}aria-current="page"{{end}}>Transfers</a>
     <a data-app-link href="{{if .AdminSurface}}/admin/preferences{{else}}/settings{{end}}" {{if eq .Page "preferences"}}aria-current="page"{{end}}>Settings</a>
-    {{if or .User.IsAdmin .AdminSurface}}<a data-app-link href="{{if not .AdminSurface}}{{.Config.AdminURL}}{{end}}/admin/users" {{if and .AdminSurface (or .AllTransfers (eq .Page "users") (eq .Page "settings") (eq .Page "login"))}}aria-current="page"{{end}}>Admin</a>{{end}}
+    {{if or .User.IsAdmin .AdminSurface}}<a data-app-link href="/admin/users" {{if or .AdminSection (and .AdminSurface (eq .Page "login"))}}aria-current="page"{{end}}>Admin</a>{{end}}
     {{if ne .Page "login"}}
     <button type="button" id="logout" class="quiet">Sign out</button>
     {{end}}
@@ -27,7 +27,7 @@
   </nav>
 </header>
 <main>
-  {{if and .AdminSurface (or .AllTransfers (eq .Page "users") (eq .Page "settings"))}}
+  {{if .AdminSection}}
   <nav class="section-nav" aria-label="Admin">
     <span class="section-label">Admin</span>
     <a href="/admin/users" {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>

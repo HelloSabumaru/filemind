@@ -22,10 +22,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := userFromContext(r.Context())
-	source := a.ownerLimiter
-	if adminRequest(r) {
-		source = a.adminLimiter
-	}
+	source := a.accountPasswordLimiter(r)
 	valid, err := a.verifyCredential(r, source, a.accountPasswords, user.ID, user.PasswordHash, input.CurrentPassword, true)
 	if err != nil {
 		a.operationError(w, r, "change_password", err)

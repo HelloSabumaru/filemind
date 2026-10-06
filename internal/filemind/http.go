@@ -41,6 +41,9 @@ func (a *App) OwnerHandler() http.Handler {
 	for _, pattern := range []string{"OPTIONS /uploads/{$}", "POST /uploads/{$}", "HEAD /uploads/{id}", "PATCH /uploads/{id}"} {
 		m.HandleFunc(pattern, a.ownerAPI(a.upload))
 	}
+	if !a.cfg.RequirePrivateAdminSignIn {
+		a.registerAdminRoutes(m, "owner")
+	}
 	m.HandleFunc("GET /assets/{name}", a.asset)
 	return a.middleware(m, "owner")
 }
@@ -75,23 +78,35 @@ func (a *App) AdminHandler() http.Handler {
 	m.HandleFunc("GET /admin/api/preferences", a.adminAPI(a.getUserPreferences))
 	m.HandleFunc("PUT /admin/api/preferences", a.adminAPI(a.saveUserPreferences))
 	m.HandleFunc("POST /admin/api/password", a.adminAPI(a.changePassword))
-	m.HandleFunc("GET /admin/transfers", a.accountPage("transfers", "admin"))
-	m.HandleFunc("GET /admin/api/transfers", a.adminAPI(a.listAdminTransfers))
-	m.HandleFunc("GET /admin/api/transfers/{id}", a.adminAPI(a.getTransfer))
-	m.HandleFunc("PATCH /admin/api/transfers/{id}", a.adminAPI(a.editTransfer))
-	m.HandleFunc("POST /admin/api/transfers/{id}/revoke", a.adminAPI(a.revokeTransfer))
-	m.HandleFunc("DELETE /admin/api/transfers/{id}", a.adminAPI(a.deleteTransfer))
-	m.HandleFunc("GET /admin/api/transfers/{id}/qr.png", a.adminAPI(a.qr))
-	m.HandleFunc("GET /admin/users", a.accountPage("users", "admin"))
-	m.HandleFunc("GET /admin/settings", a.accountPage("settings", "admin"))
-	m.HandleFunc("GET /admin/api/users", a.adminAPI(a.listUsers))
-	m.HandleFunc("POST /admin/api/users", a.adminAPI(a.createUser))
-	m.HandleFunc("DELETE /admin/api/users/{id}", a.adminAPI(a.deleteUser))
-	m.HandleFunc("PATCH /admin/api/users/{id}", a.adminAPI(a.editUser))
-	m.HandleFunc("GET /admin/api/settings", a.adminAPI(a.getSettings))
-	m.HandleFunc("PUT /admin/api/settings", a.adminAPI(a.saveSettings))
+	a.registerAdminRoutes(m, "admin")
 	m.HandleFunc("GET /assets/{name}", a.asset)
 	return a.middleware(m, "admin")
+}
+
+func (a *App) registerAdminRoutes(m *http.ServeMux, kind string) {
+	for path, page := range map[string]string{
+		"/admin/users":     "users",
+		"/admin/settings":  "settings",
+		"/admin/transfers": "all-transfers",
+	} {
+		m.HandleFunc("GET "+path, a.accountPage(page, kind))
+	}
+	for pattern, next := range map[string]http.HandlerFunc{
+		"GET /admin/api/transfers":              a.listAdminTransfers,
+		"GET /admin/api/transfers/{id}":         a.getTransfer,
+		"PATCH /admin/api/transfers/{id}":       a.editTransfer,
+		"POST /admin/api/transfers/{id}/revoke": a.revokeTransfer,
+		"DELETE /admin/api/transfers/{id}":      a.deleteTransfer,
+		"GET /admin/api/transfers/{id}/qr.png":  a.qr,
+		"GET /admin/api/users":                  a.listUsers,
+		"POST /admin/api/users":                 a.createUser,
+		"DELETE /admin/api/users/{id}":          a.deleteUser,
+		"PATCH /admin/api/users/{id}":           a.editUser,
+		"GET /admin/api/settings":               a.getSettings,
+		"PUT /admin/api/settings":               a.saveSettings,
+	} {
+		m.HandleFunc(pattern, a.adminAccountAPI(kind, next))
+	}
 }
 
 func (a *App) PublicHandler() http.Handler {
@@ -192,6 +207,15 @@ func (a *App) accountOptions(kind string) (origin, scope, home string) {
 	return a.cfg.OwnerURL, "account", "/upload"
 }
 
+type accountKindContextKey struct{}
+
+func (a *App) accountPasswordLimiter(r *http.Request) *limiter {
+	if r.Context().Value(accountKindContextKey{}) == "admin" {
+		return a.adminLimiter
+	}
+	return a.ownerLimiter
+}
+
 func (a *App) accountAPI(kind string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, err := a.authenticatedAccount(r, kind)
@@ -204,7 +228,9 @@ func (a *App) accountAPI(kind string, next http.HandlerFunc) http.HandlerFunc {
 			apiError(w, 403, "Request verification failed. Refresh and retry.")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
+		ctx := context.WithValue(r.Context(), userContextKey{}, user)
+		ctx = context.WithValue(ctx, accountKindContextKey{}, kind)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -223,6 +249,7 @@ type pageData struct {
 	Config                                Config
 	User                                  User
 	AdminSurface                          bool
+	AdminSection                          bool
 	AllTransfers                          bool
 }
 
@@ -243,6 +270,11 @@ func (a *App) accountPage(page, kind string) http.HandlerFunc {
 			http.Redirect(w, r, withTheme(r, "/login"), 303)
 			return
 		}
+		adminSection := page == "users" || page == "settings" || page == "all-transfers"
+		if adminSection && !user.IsAdmin {
+			notFound(w)
+			return
+		}
 		_, scope, _ := a.accountOptions(kind)
 		preferences, err := a.userPreferences(r.Context(), user.ID)
 		if err != nil {
@@ -250,10 +282,10 @@ func (a *App) accountPage(page, kind string) http.HandlerFunc {
 			return
 		}
 		displayPage := page
-		if page == "my-transfers" {
+		if page == "my-transfers" || page == "all-transfers" {
 			displayPage = "transfers"
 		}
-		a.render(w, "owner", pageData{Page: displayPage, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", AllTransfers: kind == "admin" && page == "transfers", DateFormat: preferences.DateFormat})
+		a.render(w, "owner", pageData{Page: displayPage, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", AdminSection: adminSection, AllTransfers: page == "all-transfers", DateFormat: preferences.DateFormat})
 	}
 }
 
