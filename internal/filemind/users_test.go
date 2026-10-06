@@ -10,10 +10,8 @@ import (
 
 func TestUserUUIDsPersistWithTransferOwnership(t *testing.T) {
 	a := testApp(t)
-	if err := a.initializeDemoUser(); err != nil {
-		t.Fatal(err)
-	}
 	admin := adminBrowser(t, a)
+	addAccount(t, admin, "uuid-another-user", 100)
 	created := addAccount(t, admin, "uuid-user", 100)
 	response := admin.request("GET", "/admin/api/users", nil, nil)
 	checkStatus(t, response, 200)
@@ -30,7 +28,7 @@ func TestUserUUIDsPersistWithTransferOwnership(t *testing.T) {
 		seen[user.ID] = true
 	}
 	if len(users) != 3 || !seen[created.ID] {
-		t.Fatal("bootstrap, demo or created user is missing")
+		t.Fatal("initial or created user is missing")
 	}
 	owner := newBrowser(a, false)
 	loginAs(t, owner, created.Username, accountTestPassword)

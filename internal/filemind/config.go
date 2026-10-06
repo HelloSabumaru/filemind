@@ -15,23 +15,18 @@ import (
 
 type Config struct {
 	DataDir, OwnerListen, PublicListen, AdminListen, OwnerURL, PublicURL, AdminURL string
-	OwnerUsername, OwnerPasswordFile                                               string
 	DefaultExpiry                                                                  time.Duration
 	DefaultDownloadLimit, MaxFileSize, MaxTransferSize, StorageQuota, MinFreeSpace int64
 	Development                                                                    bool
-	Demo                                                                           bool
 	RequirePrivateAdminSignIn                                                      bool
 	TrustedProxies                                                                 []netip.Prefix
 }
 
 func ConfigFromEnv() (Config, error) {
-	c := Config{DataDir: env("FILEMIND_DATA_DIR", "/data"), OwnerListen: env("FILEMIND_OWNER_LISTEN", ":8080"), PublicListen: env("FILEMIND_PUBLIC_LISTEN", ":8081"), AdminListen: env("FILEMIND_ADMIN_LISTEN", "127.0.0.1:8082"), OwnerURL: os.Getenv("FILEMIND_OWNER_URL"), PublicURL: os.Getenv("FILEMIND_PUBLIC_URL"), AdminURL: os.Getenv("FILEMIND_ADMIN_URL"), OwnerUsername: env("FILEMIND_OWNER_USERNAME", "admin"), OwnerPasswordFile: os.Getenv("FILEMIND_OWNER_PASSWORD_FILE")}
+	c := Config{DataDir: env("FILEMIND_DATA_DIR", "/data"), OwnerListen: env("FILEMIND_OWNER_LISTEN", ":8080"), PublicListen: env("FILEMIND_PUBLIC_LISTEN", ":8081"), AdminListen: env("FILEMIND_ADMIN_LISTEN", "127.0.0.1:8082"), OwnerURL: os.Getenv("FILEMIND_OWNER_URL"), PublicURL: os.Getenv("FILEMIND_PUBLIC_URL"), AdminURL: os.Getenv("FILEMIND_ADMIN_URL")}
 	var err error
 	if c.Development, err = strconv.ParseBool(env("FILEMIND_INSECURE_DEVELOPMENT", "false")); err != nil {
 		return c, errors.New("invalid FILEMIND_INSECURE_DEVELOPMENT")
-	}
-	if c.Demo, err = strconv.ParseBool(env("FILEMIND_DEMO", "false")); err != nil {
-		return c, errors.New("invalid FILEMIND_DEMO")
 	}
 	if c.RequirePrivateAdminSignIn, err = strconv.ParseBool(env("FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN", "true")); err != nil {
 		return c, errors.New("invalid FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN")
@@ -74,12 +69,6 @@ func (c Config) Validate() error {
 	if !filepath.IsAbs(c.DataDir) || filepath.Clean(c.DataDir) == "/" {
 		return errors.New("FILEMIND_DATA_DIR must be a dedicated absolute directory")
 	}
-	if !validUsername(c.OwnerUsername) || c.OwnerPasswordFile == "" {
-		return errors.New("owner username and password file are required")
-	}
-	if c.Demo && (!c.Development || strings.EqualFold(c.OwnerUsername, "user")) {
-		return errors.New("demo mode requires local development and a separate administrator username")
-	}
 	if c.MaxFileSize <= 0 || c.MaxTransferSize < c.MaxFileSize || c.StorageQuota < c.MaxTransferSize || c.StorageQuota > 1<<50 || c.DefaultDownloadLimit < 0 || c.DefaultDownloadLimit > 1000000 || c.DefaultExpiry < 0 || c.DefaultExpiry > 365*24*time.Hour || c.DefaultExpiry%time.Second != 0 || c.MinFreeSpace < 0 {
 		return errors.New("invalid storage or retention settings")
 	}
@@ -117,9 +106,6 @@ func (c Config) Validate() error {
 		n, err := strconv.Atoi(port)
 		if err != nil || n < 1 || n > 65535 || (host != "" && net.ParseIP(host) == nil && host != "localhost") {
 			return errors.New("invalid listener address")
-		}
-		if c.Demo && !isLoopback(host) {
-			return errors.New("demo listeners must use loopback addresses")
 		}
 		for _, other := range addresses[:i] {
 			if address == other {

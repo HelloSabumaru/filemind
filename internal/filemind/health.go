@@ -61,7 +61,13 @@ func (a *App) checkPersistence(ctx context.Context) error {
 		return err
 	}
 	if admins == 0 {
-		return errors.New("administrator unavailable")
+		pending, err := a.setupPending(ctx)
+		if err != nil {
+			return err
+		}
+		if !pending {
+			return errors.New("administrator unavailable")
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err

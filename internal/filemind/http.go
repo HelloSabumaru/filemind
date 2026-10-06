@@ -54,6 +54,8 @@ func (a *App) AdminHandler() http.Handler {
 	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/users", http.StatusSeeOther) })
 	m.HandleFunc("GET /login", a.loginPage("admin"))
 	m.HandleFunc("POST /login", a.login("admin"))
+	m.HandleFunc("GET /setup", a.setupPage)
+	m.HandleFunc("POST /setup", a.setup)
 	m.HandleFunc("POST /logout", a.adminAPI(a.logout("admin")))
 	m.HandleFunc("GET /admin/upload", a.accountPage("upload", "admin"))
 	m.HandleFunc("GET /admin/my-transfers", a.accountPage("my-transfers", "admin"))
@@ -257,6 +259,17 @@ type pageData struct {
 func (a *App) loginPage(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, scope, home := a.accountOptions(kind)
+		if kind == "admin" {
+			pending, err := a.setupPending(r.Context())
+			if err != nil {
+				a.operationError(w, r, "read_setup", err)
+				return
+			}
+			if pending {
+				http.Redirect(w, r, withTheme(r, "/setup"), http.StatusSeeOther)
+				return
+			}
+		}
 		if _, err := a.authenticatedAccount(r, kind); err == nil {
 			http.Redirect(w, r, withTheme(r, home), 303)
 			return

@@ -184,6 +184,21 @@ $("#login-form")?.addEventListener("submit", async (event) => {
     button.disabled = false;
   }
 });
+$("#setup-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector("button");
+  button.disabled = true;
+  try {
+    await api("/setup", "POST", { username: form.elements.username.value, password: form.elements.password.value });
+    form.elements.password.value = "";
+    location.assign("/admin/users");
+  } catch (e) {
+    fail(e);
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#unlock-form")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;

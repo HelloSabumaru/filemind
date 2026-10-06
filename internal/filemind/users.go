@@ -336,17 +336,3 @@ func (a *App) cancelUserUploads(ctx context.Context, userID string) error {
 	}
 	return nil
 }
-
-func (a *App) initializeDemoUser() error {
-	var found int
-	err := a.store.db.QueryRow("SELECT COUNT(*) FROM users WHERE username='user'").Scan(&found)
-	if err != nil || found > 0 {
-		return err
-	}
-	hash, err := hashPassword("password")
-	if err != nil {
-		return err
-	}
-	_, err = a.store.db.Exec("INSERT INTO users(id,username,password_hash,storage_quota) VALUES(?,'user',?,?)", newUserID(), hash, a.settings().DefaultUserQuota)
-	return err
-}

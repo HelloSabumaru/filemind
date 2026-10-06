@@ -2,9 +2,6 @@ package filemind
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -109,78 +106,6 @@ func TestProductionPasswordMinimumAcrossAccountEndpoints(t *testing.T) {
 			checkStatus(t, admin.json("POST", passwordPath, map[string]string{"currentPassword": minimumPassword, "newPassword": longPassword}), 200)
 			loginAs(t, admin, "admin", longPassword)
 			checkStatus(t, admin.json("PATCH", "/admin/api/users/"+account.ID, map[string]int64{"storageQuota": 512}), 200)
-		})
-	}
-}
-
-func TestProductionBootstrapPasswordMinimum(t *testing.T) {
-	for _, existing := range []bool{false, true} {
-		name := "fresh"
-		if existing {
-			name = "reset"
-		}
-		t.Run(name, func(t *testing.T) {
-			for _, tc := range []struct {
-				name, password string
-				valid          bool
-			}{
-				{"empty", "", false},
-				{"single", "x", false},
-				{"below-minimum", strings.Repeat("a", 14), false},
-				{"multibyte-below-minimum", strings.Repeat("🔐", 14), false},
-				{"minimum", strings.Repeat("a", 15), true},
-				{"unicode-minimum", strings.Repeat("🔐", 15), true},
-				{"long", strings.Repeat("p", 1024), true},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					a := testApp(t)
-					original := passwordTestUser(t, a, "admin")
-					cfg := a.cfg
-					a.Close()
-					cfg.Development = false
-					cfg.OwnerURL, cfg.PublicURL, cfg.AdminURL = "https://owner.example.test", "https://public.example.test", "https://admin.example.test"
-					if !existing {
-						cfg.DataDir = filepath.Join(t.TempDir(), "fresh-data")
-					}
-					if err := os.WriteFile(cfg.OwnerPasswordFile, []byte(tc.password+"\n"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					restarted, err := New(cfg, a.logger)
-					if restarted != nil {
-						t.Cleanup(restarted.Close)
-					}
-					if tc.valid {
-						if err != nil {
-							t.Fatal("valid bootstrap password rejected", err)
-						}
-						admin := newBrowser(restarted, false)
-						admin.admin = true
-						loginAs(t, admin, "admin", tc.password)
-						return
-					}
-					if err == nil || !strings.Contains(err.Error(), "at least 15 characters") {
-						t.Fatal("short bootstrap password did not prevent startup")
-					}
-					if !existing {
-						if _, err := os.Stat(cfg.DataDir); !errors.Is(err, os.ErrNotExist) {
-							t.Fatal("invalid bootstrap password initialized application data", err)
-						}
-						return
-					}
-					if err := os.WriteFile(cfg.OwnerPasswordFile, []byte("owner-password-for-validation\n"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					restored, err := New(cfg, a.logger)
-					if err != nil {
-						t.Fatal(err)
-					}
-					t.Cleanup(restored.Close)
-					current := passwordTestUser(t, restored, "admin")
-					if current.AuthVersion != original.AuthVersion || current.PasswordHash != original.PasswordHash {
-						t.Fatal("rejected bootstrap reset altered stored credentials")
-					}
-				})
-			}
 		})
 	}
 }

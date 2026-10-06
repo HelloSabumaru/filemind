@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,17 +25,15 @@ async function freePort() {
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), "filemind-browser-"));
   binary = join(directory, "filemind");
-  const secret = join(directory, "password");
   execFileSync("go", ["build", "-o", binary, "./cmd/filemind"], {stdio:"pipe"});
-  await writeFile(secret, `${adminPassword}\n`, {mode:0o600});
   const ports = [];
   while (ports.length < 3) { const port = await freePort(); if (!ports.includes(port)) ports.push(port); }
   [ownerURL, publicURL, adminURL] = ports.map(port => `http://localhost:${port}`);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("FILEMIND_")));
   Object.assign(env, {
-    FILEMIND_INSECURE_DEVELOPMENT:"true", FILEMIND_DEMO:"true", FILEMIND_OWNER_USERNAME:"admin",
+    FILEMIND_INSECURE_DEVELOPMENT:"true",
     FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN:"false",
-    FILEMIND_OWNER_PASSWORD_FILE:secret, FILEMIND_DATA_DIR:join(directory,"data"),
+    FILEMIND_DATA_DIR:join(directory,"data"),
     FILEMIND_OWNER_LISTEN:`127.0.0.1:${ports[0]}`, FILEMIND_PUBLIC_LISTEN:`127.0.0.1:${ports[1]}`, FILEMIND_ADMIN_LISTEN:`127.0.0.1:${ports[2]}`,
     FILEMIND_OWNER_URL:ownerURL, FILEMIND_PUBLIC_URL:publicURL, FILEMIND_ADMIN_URL:adminURL,
   });
@@ -135,6 +133,57 @@ async function publishedResult(page) {
   await page.locator("#share-result").waitFor({state:"visible"});
   return page.locator("#share-url").inputValue();
 }
+
+test("first admin setup is available once on the admin listener", async t => {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror",error => pageErrors.push(error.message));
+  t.after(() => assert.deepEqual(pageErrors,[]));
+  for (const origin of [ownerURL,publicURL]) {
+    assert.equal((await fetch(`${origin}/setup`)).status,404);
+    assert.equal((await fetch(`${origin}/setup`,{method:"POST"})).status,404);
+  }
+  await page.goto(`${adminURL}/login`);
+  await page.waitForURL(`${adminURL}/setup`);
+  await page.getByRole("heading",{name:"Create administrator",exact:true}).waitFor();
+  assert.deepEqual(await page.locator("#setup-form input").evaluateAll(inputs => inputs.map(input => input.name)),["username","password"]);
+  assert.equal(await page.locator("#logout").count(),0);
+  await page.locator("#setup-form [name=username]").fill("admin");
+  await page.locator("#setup-form [name=password]").fill(adminPassword);
+  await page.getByRole("button",{name:"Create administrator",exact:true}).click();
+  await page.waitForURL(`${adminURL}/admin/users`);
+  await page.locator("#users .transfer-card").first().waitFor();
+  const initial = (await api(page,"/admin/api/users")).body;
+  assert.equal(initial.length,1);
+  assert.equal(initial[0].username,"admin");
+  assert.equal(initial[0].isAdmin,true);
+  assert.match(initial[0].id,/^[0-9a-f-]{36}$/);
+  await page.locator("#new-user").click();
+  await page.locator("#user-form [name=username]").fill("user");
+  await page.locator("#user-form [name=password]").fill("password");
+  await page.locator('#user-form button[type="submit"]').click();
+  await page.locator("#user-dialog").waitFor({state:"hidden"});
+  const users = (await api(page,"/admin/api/users")).body;
+  assert.equal(users.length,2);
+  assert.equal(users.find(user => user.username === "user").isAdmin,false);
+  assert.equal(await page.evaluate(async () => (await fetch("/setup",{method:"POST"})).status),404);
+  await stopServer("SIGTERM");
+  await startServer();
+  await page.goto(`${adminURL}/setup`);
+  await page.waitForURL(`${adminURL}/admin/users`);
+  assert.equal(await page.locator("#setup-form").count(),0);
+  const anonymous = await context.browser().newContext();
+  try {
+    const signIn = await anonymous.newPage();
+    await signIn.goto(`${adminURL}/setup`);
+    await signIn.waitForURL(`${adminURL}/login`);
+    await signIn.getByRole("heading",{name:"Sign in to Admin",exact:true}).waitFor();
+  } finally {
+    await anonymous.close();
+  }
+});
 
 test("Admin keeps the main navigation and theme while switching sections", async t => {
   const context = await browser.newContext();

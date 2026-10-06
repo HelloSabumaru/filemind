@@ -327,64 +327,28 @@ func (a *App) checkCSRF(r *http.Request, scope, origin string) bool {
 	return hmac.Equal([]byte(c.Value), []byte(token)) && a.validCSRF(token, a.csrfScope(r, scope))
 }
 
-func (a *App) initializeCredentials(password string) error {
+// Existing accounts close setup without changing their credentials. The durable
+// marker keeps setup closed even if account rows are later lost or removed.
+func (a *App) initializeAuthentication() error {
+	dummyHash, err := hashPassword(randomToken())
+	if err != nil {
+		return err
+	}
 	tx, err := a.store.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var id, bootstrapHash string
-	err = tx.QueryRow("SELECT value FROM settings WHERE key='bootstrap_user'").Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		id = newUserID()
-		bootstrapHash, err = hashPassword(password)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.Exec("INSERT INTO users(id,username,password_hash,is_admin,storage_quota) VALUES(?,?,?,1,?)", id, a.cfg.OwnerUsername, bootstrapHash, a.settings().DefaultUserQuota); err != nil {
-			return err
-		}
-		if _, err = tx.Exec("INSERT INTO settings(key,value) VALUES('bootstrap_user',?),('bootstrap_hash',?)", id, bootstrapHash); err != nil {
-			return err
-		}
-	} else if err != nil {
+	if _, err = tx.Exec("INSERT OR IGNORE INTO settings(key,value) SELECT 'setup_complete','1' WHERE EXISTS(SELECT 1 FROM users)"); err != nil {
 		return err
-	} else {
-		user, err := scanUser(tx.QueryRow("SELECT "+userColumns+" FROM users u WHERE u.id=?", id))
-		if err != nil || !user.IsAdmin || user.Disabled {
-			return errors.New("invalid stored administrator")
-		}
-		if err = tx.QueryRow("SELECT value FROM settings WHERE key='bootstrap_hash'").Scan(&bootstrapHash); err != nil {
-			return err
-		}
-		changed := !verifyPassword(bootstrapHash, password)
-		if changed {
-			bootstrapHash, err = hashPassword(password)
-			if err != nil {
-				return err
-			}
-			if _, err = tx.Exec("UPDATE settings SET value=? WHERE key='bootstrap_hash'", bootstrapHash); err != nil {
-				return err
-			}
-			user.PasswordHash = bootstrapHash
-		}
-		if changed || user.Username != a.cfg.OwnerUsername {
-			if _, err = tx.Exec("UPDATE users SET username=?,password_hash=?,auth_version=auth_version+1 WHERE id=?", a.cfg.OwnerUsername, user.PasswordHash, id); err != nil {
-				return err
-			}
-			if _, err = tx.Exec("DELETE FROM sessions WHERE user_id=?", id); err != nil {
-				return err
-			}
-		}
+	}
+	if _, err = tx.Exec("DELETE FROM settings WHERE key IN ('bootstrap_user','bootstrap_hash')"); err != nil {
+		return err
 	}
 	if a.cfg.RequirePrivateAdminSignIn {
 		if _, err = tx.Exec("DELETE FROM sessions WHERE kind='owner' AND user_id IN (SELECT id FROM users WHERE is_admin=1)"); err != nil {
 			return err
 		}
-	}
-	dummyHash, err := hashPassword(randomToken())
-	if err != nil {
-		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err

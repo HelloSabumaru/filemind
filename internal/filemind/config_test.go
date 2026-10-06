@@ -2,7 +2,6 @@ package filemind
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -26,7 +25,6 @@ func TestPrivateAdminSignInEnvironment(t *testing.T) {
 	t.Setenv("FILEMIND_OWNER_URL", "https://owner.example")
 	t.Setenv("FILEMIND_PUBLIC_URL", "https://files.example")
 	t.Setenv("FILEMIND_ADMIN_URL", "https://admin.example")
-	t.Setenv("FILEMIND_OWNER_PASSWORD_FILE", filepath.Join(t.TempDir(), "password"))
 	const key = "FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN"
 	for _, test := range []struct {
 		name, value string
@@ -68,7 +66,6 @@ func TestEnvironmentDefaultKeepsAdministrationOnPrivateListener(t *testing.T) {
 	base := a.cfg
 	a.Close()
 	t.Setenv("FILEMIND_DATA_DIR", base.DataDir)
-	t.Setenv("FILEMIND_OWNER_PASSWORD_FILE", base.OwnerPasswordFile)
 	t.Setenv("FILEMIND_OWNER_URL", base.OwnerURL)
 	t.Setenv("FILEMIND_PUBLIC_URL", base.PublicURL)
 	t.Setenv("FILEMIND_ADMIN_URL", base.AdminURL)

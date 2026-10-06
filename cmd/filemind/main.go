@@ -91,12 +91,12 @@ func main() {
 
 func safeStartupError(err error) string {
 	// Filesystem and database errors can contain private paths or SQL values.
-	for _, prefix := range []string{"owner password", "cannot read owner", "data directory", "invalid stored", "invalid storage", "invalid listener", "HTTPS", "origins", "owner and public", "listeners must", "unsupported database schema"} {
+	for _, prefix := range []string{"data directory", "invalid stored", "invalid storage", "invalid listener", "HTTPS", "origins", "owner and public", "listeners must", "unsupported database schema"} {
 		if strings.HasPrefix(err.Error(), prefix) {
 			return err.Error()
 		}
 	}
-	return "check data volume permissions, owner credentials, and configuration"
+	return "check data volume permissions and configuration"
 }
 func server(h http.Handler, logger *slog.Logger) *http.Server {
 	return &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, WriteTimeout: time.Minute, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 16 * 1024, ErrorLog: log.New(httpErrorWriter{logger}, "", 0)}

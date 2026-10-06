@@ -14,7 +14,7 @@
 <header class="topbar">
   <a class="brand" data-app-link href="{{$uploadPath}}"><img src="/assets/icon.svg" alt="" width="24" height="24">FileMind</a>
   <nav aria-label="Main">
-    {{if or (ne .Page "login") .AdminSurface}}
+    {{if and (ne .Page "setup") (or (ne .Page "login") .AdminSurface)}}
     <a data-app-link href="{{$uploadPath}}" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
     <a data-app-link href="{{$transfersPath}}" {{if and (not .AllTransfers) (eq .Page "transfers")}}aria-current="page"{{end}}>Transfers</a>
     <a data-app-link href="{{if .AdminSurface}}/admin/preferences{{else}}/settings{{end}}" {{if eq .Page "preferences"}}aria-current="page"{{end}}>Settings</a>
@@ -36,7 +36,18 @@
   </nav>
   {{end}}
   <div id="notice" role="status" aria-live="polite" hidden></div>
-  {{if eq .Page "login"}}
+  {{if eq .Page "setup"}}
+  <section class="login panel">
+    <h1>Create administrator</h1>
+    <p>Create the first account to start using FileMind.</p>
+    <form id="setup-form">
+      <label>Username<input name="username" autocomplete="username" required maxlength="100"></label>
+      <label>Password<input name="password" type="password" autocomplete="new-password" required></label>
+      {{if gt .AccountPasswordMinimum 1}}<p class="small muted">Use at least {{.AccountPasswordMinimum}} characters.</p>{{end}}
+      <button type="submit">Create administrator</button>
+    </form>
+  </section>
+  {{else if eq .Page "login"}}
   <section class="login panel">
     <h1>{{if .AdminSurface}}Sign in to Admin{{else}}Sign in{{end}}</h1>
     <form id="login-form">

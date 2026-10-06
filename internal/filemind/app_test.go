@@ -27,12 +27,21 @@ import (
 
 func testApp(t *testing.T) *App {
 	t.Helper()
-	dir := t.TempDir()
-	secret := filepath.Join(dir, "password")
-	if err := os.WriteFile(secret, []byte("owner-password-for-validation"), 0600); err != nil {
+	a := uninitializedTestApp(t)
+	hash, err := hashPassword("owner-password-for-validation")
+	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{DataDir: filepath.Join(dir, "data"), OwnerListen: ":8080", PublicListen: ":8081", AdminListen: ":8082", OwnerURL: "http://localhost:9080", PublicURL: "http://localhost:9081", AdminURL: "http://localhost:9082", OwnerUsername: "admin", OwnerPasswordFile: secret, DefaultExpiry: 24 * time.Hour, MaxFileSize: 2 << 30, MaxTransferSize: 2 << 30, StorageQuota: 20 << 30, Development: true}
+	if _, err := a.createInitialAdmin(context.Background(), "admin", hash); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func uninitializedTestApp(t *testing.T) *App {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := Config{DataDir: filepath.Join(dir, "data"), OwnerListen: ":8080", PublicListen: ":8081", AdminListen: ":8082", OwnerURL: "http://localhost:9080", PublicURL: "http://localhost:9081", AdminURL: "http://localhost:9082", DefaultExpiry: 24 * time.Hour, MaxFileSize: 2 << 30, MaxTransferSize: 2 << 30, StorageQuota: 20 << 30, Development: true}
 	a, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

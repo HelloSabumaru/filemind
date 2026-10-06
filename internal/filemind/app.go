@@ -5,13 +5,11 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -73,15 +71,6 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	passwordBytes, e := os.ReadFile(cfg.OwnerPasswordFile)
-	if e != nil {
-		return nil, errors.New("cannot read owner password file")
-	}
-	password := strings.TrimRight(string(passwordBytes), "\r\n")
-	clear(passwordBytes)
-	if err := validateAccountPassword(password, cfg.Development); err != nil {
-		return nil, fmt.Errorf("administrator bootstrap password: %w", err)
-	}
 	if err = os.MkdirAll(filepath.Join(cfg.DataDir, "uploads"), 0700); err != nil {
 		return nil, storeError(err)
 	}
@@ -121,16 +110,11 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	if err = a.initializeSettings(); err != nil {
 		return nil, err
 	}
-	if err = a.initializeCredentials(password); err != nil {
+	if err = a.initializeAuthentication(); err != nil {
 		return nil, err
 	}
 	if err = a.pruneSessionSubjects(context.Background()); err != nil {
 		return nil, err
-	}
-	if cfg.Demo {
-		if err = a.initializeDemoUser(); err != nil {
-			return nil, err
-		}
 	}
 	key, e := a.store.setting("csrf_key")
 	if errors.Is(e, sql.ErrNoRows) {
