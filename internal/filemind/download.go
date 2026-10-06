@@ -29,16 +29,17 @@ func (a *App) authorizedTransfer(w http.ResponseWriter, r *http.Request) (Transf
 }
 func (a *App) downloadCapacity(w http.ResponseWriter, r *http.Request) (func(), bool) {
 	ip := a.clientIP(r)
-	if !a.limiter.download(ip) {
+	release, allowed := a.limiter.download(ip)
+	if !allowed {
 		w.Header().Set("Retry-After", "10")
 		a.downloadError(w, r, 429, "Too many simultaneous downloads.")
 		return nil, false
 	}
 	select {
 	case a.downloadSlots <- struct{}{}:
-		return func() { <-a.downloadSlots; a.limiter.release(ip) }, true
+		return func() { <-a.downloadSlots; release() }, true
 	default:
-		a.limiter.release(ip)
+		release()
 		w.Header().Set("Retry-After", "10")
 		a.downloadError(w, r, 429, "Downloads busy. Try again shortly.")
 		return nil, false

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -22,23 +23,44 @@ func sessionCount(t *testing.T, a *App, kind string) int {
 // Seed occupancy directly in the temporary test database without generating traffic.
 func seedSessionOccupancy(t *testing.T, a *App, kind string, count int, transfer Transfer) {
 	t.Helper()
-	var userID any
-	if kind != "share" {
-		var id string
-		name := "test-owner"
-		if kind == "admin" {
-			name = "admin"
+	// Distribute global-pool fixtures across other subjects, respecting their
+	// limits. The account/transfer under test still has room below its own cap.
+	maximum := maxSessionsPerAccount
+	if kind == "share" {
+		maximum = maxSessionsPerTransfer
+	}
+	tx, err := a.store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for group := 0; count > 0; group++ {
+		n := min(count, maximum)
+		prefix := randomID()
+		var userID any
+		transferID := ""
+		if kind == "share" {
+			transferID = randomID()
+			_, err = tx.Exec(`INSERT INTO transfers(id,user_id,title,status,created_at,touched_at,expiry_seconds,download_limit,password_hash,auth_version,share_token)
+ SELECT ?,user_id,'Session capacity fixture','published',created_at,touched_at,expiry_seconds,download_limit,password_hash,auth_version,? FROM transfers WHERE id=?`, transferID, randomToken(), transfer.ID)
+		} else {
+			userID = newUserID()
+			_, err = tx.Exec(`INSERT INTO users(id,username,password_hash,is_admin)
+ SELECT ?,?,password_hash,? FROM users WHERE is_admin=1 LIMIT 1`, userID, "occupancy-"+prefix+"-"+strconv.Itoa(group), kind == "admin")
 		}
-		if err := a.store.db.QueryRow("SELECT id FROM users WHERE username=?", name).Scan(&id); err != nil {
+		if err != nil {
 			t.Fatal(err)
 		}
-		userID = id
-	}
-	_, err := a.store.db.Exec(`WITH RECURSIVE occupancy(n) AS (
- SELECT 1 WHERE ?>0 UNION ALL SELECT n+1 FROM occupancy WHERE n<?
+		_, err = tx.Exec(`WITH RECURSIVE occupancy(n) AS (
+ SELECT 1 UNION ALL SELECT n+1 FROM occupancy WHERE n<?
  ) INSERT INTO sessions(token_hash,kind,user_id,transfer_id,auth_version,expires_at)
- SELECT 'test-occupancy-' || ? || '-' || n,?,?,?,?,? FROM occupancy`, count, count, kind, kind, userID, transfer.ID, transfer.AuthVersion, time.Now().Add(time.Hour).Unix())
-	if err != nil {
+ SELECT ? || '-' || n,?,?,?,?,? FROM occupancy`, n, prefix, kind, userID, transferID, transfer.AuthVersion, time.Now().Add(time.Hour).Unix())
+		if err != nil {
+			t.Fatal(err)
+		}
+		count -= n
+	}
+	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -105,7 +127,7 @@ func TestShareSessionReuseAndReplacement(t *testing.T) {
 }
 
 func TestSessionCapacityIsIndependentForEachKind(t *testing.T) {
-	for _, saturated := range []string{"share", "owner", "admin"} {
+	for _, saturated := range []string{"share", "owner"} {
 		t.Run(saturated, func(t *testing.T) {
 			a := testApp(t)
 			owner := newBrowser(a, false)

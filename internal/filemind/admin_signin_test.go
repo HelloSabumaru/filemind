@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestAdminMainSignInIsDefaultAndPersists(t *testing.T) {
+func TestAdminMainSignInOptInPersists(t *testing.T) {
 	a := testApp(t)
 	if a.cfg.RequirePrivateAdminSignIn {
-		t.Fatal("private-only sign-in should be optional")
+		t.Fatal("test fixture should explicitly allow main administrator sign-in")
 	}
 	owner := newBrowser(a, false)
 	loginAs(t, owner, "admin", "owner-password-for-validation")

@@ -129,6 +129,12 @@ PRAGMA user_version=3;`)
 		db.Close()
 		return nil, err
 	}
+	// These indexes also apply when reopening this same schema version.
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS sessions_account_capacity ON sessions(kind,user_id,expires_at);
+CREATE INDEX IF NOT EXISTS sessions_transfer_capacity ON sessions(kind,transfer_id,expires_at);`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db}, nil
 }
 

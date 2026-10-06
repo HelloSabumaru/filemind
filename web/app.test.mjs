@@ -34,6 +34,7 @@ before(async () => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("FILEMIND_")));
   Object.assign(env, {
     FILEMIND_INSECURE_DEVELOPMENT:"true", FILEMIND_DEMO:"true", FILEMIND_OWNER_USERNAME:"admin",
+    FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN:"false",
     FILEMIND_OWNER_PASSWORD_FILE:secret, FILEMIND_DATA_DIR:join(directory,"data"),
     FILEMIND_OWNER_LISTEN:`127.0.0.1:${ports[0]}`, FILEMIND_PUBLIC_LISTEN:`127.0.0.1:${ports[1]}`, FILEMIND_ADMIN_LISTEN:`127.0.0.1:${ports[2]}`,
     FILEMIND_OWNER_URL:ownerURL, FILEMIND_PUBLIC_URL:publicURL, FILEMIND_ADMIN_URL:adminURL,

@@ -33,7 +33,7 @@ func ConfigFromEnv() (Config, error) {
 	if c.Demo, err = strconv.ParseBool(env("FILEMIND_DEMO", "false")); err != nil {
 		return c, errors.New("invalid FILEMIND_DEMO")
 	}
-	if c.RequirePrivateAdminSignIn, err = strconv.ParseBool(env("FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN", "false")); err != nil {
+	if c.RequirePrivateAdminSignIn, err = strconv.ParseBool(env("FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN", "true")); err != nil {
 		return c, errors.New("invalid FILEMIND_REQUIRE_PRIVATE_ADMIN_SIGN_IN")
 	}
 	if c.DefaultExpiry, err = time.ParseDuration(env("FILEMIND_DEFAULT_EXPIRY", "24h")); err != nil || c.DefaultExpiry < 0 {

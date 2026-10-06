@@ -119,6 +119,9 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	if err = a.initializeCredentials(password); err != nil {
 		return nil, err
 	}
+	if err = a.pruneSessionSubjects(context.Background()); err != nil {
+		return nil, err
+	}
 	if cfg.Demo {
 		if err = a.initializeDemoUser(); err != nil {
 			return nil, err

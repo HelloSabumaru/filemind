@@ -1,6 +1,7 @@
 package filemind
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -85,7 +86,53 @@ func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
 	return user, err
 }
 
-const maxSessionsPerKind = 10000
+const (
+	maxSessionsPerKind     = 10000
+	maxSessionsPerAccount  = 32
+	maxSessionsPerTransfer = 256
+)
+
+// Successful authentication at the subject's limit retires only its oldest
+// sessions. It must not lock the account out or evict another subject's session.
+func capSessionSubject(ctx context.Context, tx *sql.Tx, kind, column, subject string, maximum int) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions WHERE kind=? AND "+column+"=?", kind, subject).Scan(&count); err != nil {
+		return err
+	}
+	if count < maximum {
+		return nil
+	}
+	// column is an internal constant; rowid breaks ties for same-second sign-ins.
+	_, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE kind=? AND "+column+"=? ORDER BY expires_at,rowid LIMIT ?)", kind, subject, count-maximum+1)
+	return err
+}
+
+func (a *App) pruneSessionSubjects(ctx context.Context) error {
+	tx, err := a.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at<=?", time.Now().Unix()); err != nil {
+		return err
+	}
+	for _, subject := range []struct {
+		where, column string
+		maximum       int
+	}{
+		{"kind IN ('owner','admin')", "user_id", maxSessionsPerAccount},
+		{"kind='share'", "transfer_id", maxSessionsPerTransfer},
+	} {
+		_, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash IN
+ (SELECT token_hash FROM (SELECT token_hash,ROW_NUMBER() OVER
+ (PARTITION BY kind,`+subject.column+` ORDER BY expires_at DESC,rowid DESC) AS position
+ FROM sessions WHERE `+subject.where+`) WHERE position>?)`, subject.maximum)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 
 func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, t Transfer, user User) error {
 	if kind == "owner" && user.IsAdmin && a.cfg.RequirePrivateAdminSignIn {
@@ -130,6 +177,9 @@ func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, 
 		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=? AND kind=?", previous, kind); err != nil {
 			return err
 		}
+		if err = capSessionSubject(r.Context(), tx, kind, "user_id", user.ID, maxSessionsPerAccount); err != nil {
+			return err
+		}
 	} else {
 		var active int
 		if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM transfers WHERE id=? AND status='published' AND auth_version=? AND password_hash=? AND (expires_at=0 OR expires_at>?)", t.ID, t.AuthVersion, t.PasswordHash, now).Scan(&active); err != nil {
@@ -137,6 +187,9 @@ func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, 
 		}
 		if active != 1 {
 			return conflict("Transfer changed; refresh and retry.")
+		}
+		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE kind='share' AND transfer_id=? AND auth_version<>?", t.ID, t.AuthVersion); err != nil {
+			return err
 		}
 		var reusable int
 		if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sessions WHERE token_hash=? AND kind='share' AND transfer_id=? AND auth_version=? AND expires_at>?", previous, t.ID, t.AuthVersion, now).Scan(&reusable); err != nil {
@@ -146,6 +199,9 @@ func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, 
 			return tx.Commit()
 		}
 		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash=? AND kind='share' AND transfer_id=?", previous, t.ID); err != nil {
+			return err
+		}
+		if err = capSessionSubject(r.Context(), tx, kind, "transfer_id", t.ID, maxSessionsPerTransfer); err != nil {
 			return err
 		}
 	}
