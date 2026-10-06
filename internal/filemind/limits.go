@@ -10,9 +10,9 @@ import (
 )
 
 type visitor struct {
-	requests, failures []time.Time
-	banned, seen       time.Time
-	downloads          int
+	requests, passwordAttempts []time.Time
+	seen                       time.Time
+	downloads                  int
 }
 type limiter struct {
 	mu       sync.Mutex
@@ -55,9 +55,6 @@ func (l *limiter) allow(ip string, public bool) (bool, int) {
 	if v == nil {
 		return false, 10
 	}
-	if v.banned.After(now) {
-		return false, int(time.Until(v.banned).Seconds()) + 1
-	}
 	if public {
 		v.requests = trimTimes(v.requests, now.Add(-10*time.Second))
 		if len(v.requests) >= 60 {
@@ -67,20 +64,22 @@ func (l *limiter) allow(ip string, public bool) (bool, int) {
 	}
 	return true, 0
 }
-func (l *limiter) fail(ip string) {
+
+// Limit password-check traffic without banning the source's unrelated requests.
+func (l *limiter) passwordAttempt(ip string) (bool, int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
 	v := l.visitor(ip, now)
 	if v == nil {
-		return
+		return false, 60
 	}
-	v.failures = trimTimes(v.failures, now.Add(-time.Minute))
-	v.failures = append(v.failures, now)
-	if len(v.failures) >= 5 {
-		v.banned = now.Add(15 * time.Minute)
-		v.failures = nil
+	v.passwordAttempts = trimTimes(v.passwordAttempts, now.Add(-time.Minute))
+	if len(v.passwordAttempts) >= 60 {
+		return false, int(v.passwordAttempts[0].Add(time.Minute).Sub(now).Seconds()) + 1
 	}
+	v.passwordAttempts = append(v.passwordAttempts, now)
+	return true, 0
 }
 func (l *limiter) download(ip string) bool {
 	l.mu.Lock()

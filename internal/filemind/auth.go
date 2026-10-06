@@ -79,7 +79,7 @@ func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
 		return User{}, sql.ErrNoRows
 	}
 	user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.kind=? AND s.auth_version=u.auth_version AND s.expires_at>? AND u.disabled=0 AND u.archived=0", tokenHash(token), kind, time.Now().Unix()))
-	if err == nil && kind == "admin" && !user.IsAdmin {
+	if err == nil && ((kind == "admin" && !user.IsAdmin) || (kind == "owner" && user.IsAdmin)) {
 		return User{}, sql.ErrNoRows
 	}
 	return user, err
@@ -88,6 +88,9 @@ func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
 const maxSessionsPerKind = 10000
 
 func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, t Transfer, user User) error {
+	if kind == "owner" && user.IsAdmin {
+		return &problem{401, "Incorrect username or password."}
+	}
 	if kind == "share" && t.PasswordHash == "" {
 		return nil
 	}
@@ -286,9 +289,17 @@ func (a *App) initializeCredentials(password string) error {
 			}
 		}
 	}
+	// Retire sessions that no longer belong on the public upload listener.
+	if _, err = tx.Exec("DELETE FROM sessions WHERE kind='owner' AND user_id IN (SELECT id FROM users WHERE is_admin=1)"); err != nil {
+		return err
+	}
+	dummyHash, err := hashPassword(randomToken())
+	if err != nil {
+		return err
+	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	a.loginDummyHash = bootstrapHash
+	a.loginDummyHash = dummyHash
 	return nil
 }

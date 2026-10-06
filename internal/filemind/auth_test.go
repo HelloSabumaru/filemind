@@ -2,7 +2,9 @@ package filemind
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +25,11 @@ func seedSessionOccupancy(t *testing.T, a *App, kind string, count int, transfer
 	var userID any
 	if kind != "share" {
 		var id string
-		if err := a.store.db.QueryRow("SELECT id FROM users WHERE is_admin=1").Scan(&id); err != nil {
+		name := "test-owner"
+		if kind == "admin" {
+			name = "admin"
+		}
+		if err := a.store.db.QueryRow("SELECT id FROM users WHERE username=?", name).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		userID = id
@@ -118,7 +124,11 @@ func TestSessionCapacityIsIndependentForEachKind(t *testing.T) {
 				if kind == saturated {
 					want = http.StatusServiceUnavailable
 				}
-				checkStatus(t, account.json("POST", "/login", map[string]string{"username": "admin", "password": "owner-password-for-validation"}), want)
+				name := "test-owner"
+				if account.admin {
+					name = "admin"
+				}
+				checkStatus(t, account.json("POST", "/login", map[string]string{"username": name, "password": "owner-password-for-validation"}), want)
 				if want == http.StatusOK {
 					path := "/api/transfers"
 					if account.admin {
@@ -141,7 +151,7 @@ func TestSessionCapacityIsIndependentForEachKind(t *testing.T) {
 			checkStatus(t, owner.request("GET", "/api/transfers", nil, nil), http.StatusOK)
 			previous := owner.cookies[a.cookieName(sessionCookie("owner"))]
 			count := sessionCount(t, a, "owner")
-			checkStatus(t, owner.json("POST", "/login", map[string]string{"username": "admin", "password": "owner-password-for-validation"}), http.StatusOK)
+			checkStatus(t, owner.json("POST", "/login", map[string]string{"username": "test-owner", "password": "owner-password-for-validation"}), http.StatusOK)
 			if sessionCount(t, a, "owner") != count || owner.cookies[previous.Name].Value == previous.Value {
 				t.Fatal("sign-in did not rotate and replace the browser's previous session")
 			}
@@ -186,15 +196,25 @@ func TestConcurrentSessionAllocationKeepsCapacityBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedSessionOccupancy(t, a, "share", maxSessionsPerKind-1, stored)
-	clients := []*browser{newBrowser(a, true), newBrowser(a, true)}
-	for _, client := range clients {
-		client.page(t, "/s/"+transfer.ShareToken)
-	}
 	var group sync.WaitGroup
-	statuses := make(chan int, len(clients))
-	for _, client := range clients {
+	statuses := make(chan int, 2)
+	// Exercise the allocation transaction independently of password-check
+	// serialization, which now rejects simultaneous checks of one credential.
+	for range 2 {
 		group.Go(func() {
-			statuses <- client.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": "secret"}).Code
+			request := httptest.NewRequest("POST", a.cfg.PublicURL+"/s/"+transfer.ShareToken+"/unlock", nil)
+			response := httptest.NewRecorder()
+			err := a.grantSession(response, request, "share", stored, User{})
+			status := http.StatusOK
+			if err != nil {
+				var p *problem
+				if errors.As(err, &p) {
+					status = p.status
+				} else {
+					status = http.StatusInternalServerError
+				}
+			}
+			statuses <- status
 		})
 	}
 	group.Wait()

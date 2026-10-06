@@ -25,7 +25,12 @@ func TestUserDatePreferences(t *testing.T) {
 	check(owner, "/api/preferences", "dd/mm/yyyy")
 	checkStatus(t, owner.json("PUT", "/api/preferences", UserPreferences{DateFormat: "invalid"}), 400)
 	checkStatus(t, owner.json("PUT", "/api/preferences", UserPreferences{DateFormat: "yyyy-mm-dd"}), 200)
-	check(admin, "/admin/api/preferences", "yyyy-mm-dd")
+	check(admin, "/admin/api/preferences", "dd/mm/yyyy")
+	checkStatus(t, admin.json("PUT", "/admin/api/preferences", UserPreferences{DateFormat: "mm/dd/yyyy"}), 200)
+	check(admin, "/admin/api/preferences", "mm/dd/yyyy")
+	if html := admin.page(t, "/admin/my-transfers").Body.String(); !strings.Contains(html, `data-date-format="mm/dd/yyyy"`) {
+		t.Fatal("admin personal interface did not use the saved preference")
+	}
 	user := addAccount(t, admin, "date-user", 20)
 	other := newBrowser(a, false)
 	loginAs(t, other, user.Username, accountTestPassword)

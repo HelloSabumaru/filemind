@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 	"syscall"
 )
 
@@ -65,6 +66,10 @@ func (a *App) logFailure(operation string, err error, attrs ...any) {
 }
 
 func (a *App) operationError(w http.ResponseWriter, r *http.Request, operation string, err error) {
+	var throttle *passwordThrottleError
+	if errors.As(err, &throttle) {
+		w.Header().Set("Retry-After", strconv.Itoa(throttle.retry))
+	}
 	var p *problem
 	if errors.As(err, &p) {
 		apiError(w, p.status, p.message)

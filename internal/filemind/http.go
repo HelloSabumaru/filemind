@@ -52,6 +52,25 @@ func (a *App) AdminHandler() http.Handler {
 	m.HandleFunc("GET /login", a.loginPage("admin"))
 	m.HandleFunc("POST /login", a.login("admin"))
 	m.HandleFunc("POST /logout", a.adminAPI(a.logout("admin")))
+	m.HandleFunc("GET /admin/upload", a.accountPage("upload", "admin"))
+	m.HandleFunc("GET /admin/my-transfers", a.accountPage("my-transfers", "admin"))
+	m.HandleFunc("GET /admin/api/personal/config", a.adminAPI(a.configuration))
+	m.HandleFunc("GET /admin/api/personal/transfers", a.adminAPI(a.listTransfers))
+	m.HandleFunc("POST /admin/api/personal/transfers", a.adminAPI(a.createTransfer))
+	for pattern, next := range map[string]http.HandlerFunc{
+		"GET /admin/api/personal/transfers/{id}":                         a.getTransfer,
+		"PATCH /admin/api/personal/transfers/{id}":                       a.editTransfer,
+		"DELETE /admin/api/personal/transfers/{id}":                      a.deleteTransfer,
+		"POST /admin/api/personal/transfers/{id}/publish":                a.publish,
+		"POST /admin/api/personal/transfers/{id}/revoke":                 a.revokeTransfer,
+		"GET /admin/api/personal/transfers/{id}/qr.png":                  a.qr,
+		"POST /admin/api/personal/transfers/{id}/files/{fileID}/restart": a.restartFile,
+	} {
+		m.HandleFunc(pattern, a.accountTransferAPI("admin", next))
+	}
+	for _, pattern := range []string{"OPTIONS /admin/uploads/{$}", "POST /admin/uploads/{$}", "HEAD /admin/uploads/{id}", "PATCH /admin/uploads/{id}"} {
+		m.HandleFunc(pattern, a.adminAPI(a.upload))
+	}
 	m.HandleFunc("GET /admin/preferences", a.accountPage("preferences", "admin"))
 	m.HandleFunc("GET /admin/api/preferences", a.adminAPI(a.getUserPreferences))
 	m.HandleFunc("PUT /admin/api/preferences", a.adminAPI(a.saveUserPreferences))
@@ -154,7 +173,7 @@ func (a *App) middleware(next http.Handler, surface string) http.Handler {
 			}
 		}
 		limit := int64(64 * 1024)
-		if surface == "owner" && r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/uploads/") {
+		if r.Method == http.MethodPatch && ((surface == "owner" && strings.HasPrefix(r.URL.Path, "/uploads/")) || (surface == "admin" && strings.HasPrefix(r.URL.Path, "/admin/uploads/"))) {
 			limit = 8 * 1024 * 1024
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
@@ -204,6 +223,7 @@ type pageData struct {
 	Config                                Config
 	User                                  User
 	AdminSurface                          bool
+	AllTransfers                          bool
 }
 
 func (a *App) loginPage(kind string) http.HandlerFunc {
@@ -229,7 +249,11 @@ func (a *App) accountPage(page, kind string) http.HandlerFunc {
 			a.operationError(w, r, "read_preferences", err)
 			return
 		}
-		a.render(w, "owner", pageData{Page: page, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", DateFormat: preferences.DateFormat})
+		displayPage := page
+		if page == "my-transfers" {
+			displayPage = "transfers"
+		}
+		a.render(w, "owner", pageData{Page: displayPage, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", AllTransfers: kind == "admin" && page == "transfers", DateFormat: preferences.DateFormat})
 	}
 }
 
@@ -254,29 +278,26 @@ func (a *App) login(kind string) http.HandlerFunc {
 		if !decode(w, r, &input) {
 			return
 		}
-		select {
-		case a.hashSlots <- struct{}{}:
-			defer func() { <-a.hashSlots }()
-		default:
-			apiError(w, 429, "Password verification busy. Try again shortly.")
-			return
-		}
 		user, err := scanUser(a.store.db.QueryRowContext(r.Context(), "SELECT "+userColumns+" FROM users u WHERE u.username=?", strings.TrimSpace(input.Username)))
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			a.operationError(w, r, "sign_in", err)
 			return
 		}
-		hash := user.PasswordHash
-		if err != nil {
-			hash = a.loginDummyHash
+		eligible := err == nil && !user.Disabled && ((kind == "admin" && user.IsAdmin) || (kind == "owner" && !user.IsAdmin))
+		hash, key, targets := a.loginDummyHash, unknownPasswordKey(input.Username), a.unknownPasswords
+		if eligible {
+			hash, key, targets = user.PasswordHash, user.ID, a.accountPasswords
 		}
-		valid := verifyPassword(hash, input.Password)
-		if !valid || err != nil || user.Disabled || (kind == "admin" && !user.IsAdmin) {
-			limit := a.ownerLimiter
-			if kind == "admin" {
-				limit = a.adminLimiter
-			}
-			limit.fail(a.clientIP(r))
+		source := a.ownerLimiter
+		if kind == "admin" {
+			source = a.adminLimiter
+		}
+		valid, verifyErr := a.verifyCredential(r, source, targets, key, hash, input.Password, eligible)
+		if verifyErr != nil {
+			a.operationError(w, r, "sign_in", verifyErr)
+			return
+		}
+		if !valid {
 			apiError(w, 401, "Incorrect username or password.")
 			return
 		}
@@ -452,15 +473,12 @@ func (a *App) unlock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"ok": true})
 		return
 	}
-	select {
-	case a.hashSlots <- struct{}{}:
-		defer func() { <-a.hashSlots }()
-	default:
-		apiError(w, 429, "Password verification busy.")
+	valid, err := a.verifyCredential(r, a.limiter, a.transferPasswords, t.ID, t.PasswordHash, input.Password, true)
+	if err != nil {
+		a.operationError(w, r, "authorize_download", err)
 		return
 	}
-	if !verifyPassword(t.PasswordHash, input.Password) {
-		a.limiter.fail(a.clientIP(r))
+	if !valid {
 		apiError(w, 403, "Incorrect password.")
 		return
 	}

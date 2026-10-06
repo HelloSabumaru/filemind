@@ -3,8 +3,12 @@ const $ = (selector) => document.querySelector(selector);
 const csrf = $('meta[name="csrf-token"]')?.content;
 const page = document.body.dataset.page;
 const adminSurface = document.body.dataset.adminSurface === "true";
+const allTransfers = document.body.dataset.allTransfers === "true";
+const personalBase = adminSurface ? "/admin/api/personal" : "/api";
+const uploadPath = adminSurface ? "/admin/upload" : "/upload";
+const uploadsBase = adminSurface ? "/admin/uploads/" : "/uploads/";
 let dateFormat = document.body.dataset.dateFormat || "dd/mm/yyyy";
-const transferBase = adminSurface ? "/admin/api/transfers" : "/api/transfers";
+const transferBase = allTransfers ? "/admin/api/transfers" : `${personalBase}/transfers`;
 const bytes = (n) => {
   if (n < 1024) return `${n} B`;
   for (const unit of ["KiB", "MiB", "GiB", "TiB"]) {
@@ -228,7 +232,7 @@ function digestFile(file) {
   return result;
 }
 async function uploadPage() {
-  const config = await api("/api/config");
+  const config = await api(`${personalBase}/config`);
   const form = $("#upload-form");
   form.elements.expiryEnabled.checked = config.expirySeconds > 0;
   form.elements.expiryValue.value = config.expirySeconds ? config.expirySeconds / 86400 : 1;
@@ -239,7 +243,7 @@ async function uploadPage() {
   const states = new Map();
   const resumeID = new URLSearchParams(location.search).get("resume");
   if (resumeID) {
-    draft = await api(`/api/transfers/${encodeURIComponent(resumeID)}`);
+    draft = await api(`${transferBase}/${encodeURIComponent(resumeID)}`);
     if (draft.status !== "draft") throw new Error("This transfer is no longer a resumable draft.");
     form.elements.title.value = draft.title;
     form.elements.expiryEnabled.checked = draft.expirySeconds > 0;
@@ -345,11 +349,11 @@ async function uploadPage() {
           notice(`Checking ${file.name} before upload…`);
           files.push({ name: file.name, size: file.size, sha256: await digestFile(file) });
         }
-        draft = await api("/api/transfers", "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files });
+        draft = await api(transferBase, "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files });
         form.elements.password.value = "";
         history.replaceState(null, "", `/upload?resume=${draft.id}`);
       } else {
-        draft = await api(`/api/transfers/${draft.id}`);
+        draft = await api(`${transferBase}/${draft.id}`);
       }
       const pending = draft.files.filter((f) => !f.uploaded);
       const fileMap = new Map();
@@ -378,8 +382,8 @@ async function uploadPage() {
             else resolve();
           };
           const up = new Upload(fileMap.get(serverFile.id), {
-            endpoint: "/uploads/",
-            uploadUrl: serverFile.started ? `/uploads/${serverFile.id}` : void 0,
+            endpoint: uploadsBase,
+            uploadUrl: serverFile.started ? `${uploadsBase}${serverFile.id}` : void 0,
             chunkSize: 8 * 1024 * 1024,
             retryDelays: [0, 1e3, 3e3, 5e3],
             metadata: { file_id: serverFile.id },
@@ -412,7 +416,7 @@ async function uploadPage() {
         });
       }
       if (cancelled) return;
-      const shared = await api(`/api/transfers/${draft.id}/publish`, "POST", {});
+      const shared = await api(`${transferBase}/${draft.id}/publish`, "POST", {});
       $("#share-url").value = shared.shareUrl;
       $("#share-result").hidden = false;
       form.hidden = true;
@@ -464,15 +468,15 @@ async function uploadPage() {
       stopped.finish(new Error("Transfer cancelled."));
     }
     try {
-      await api(`/api/transfers/${draft.id}`, "DELETE");
-      location.assign("/upload");
+      await api(`${transferBase}/${draft.id}`, "DELETE");
+      location.assign(uploadPath);
     } catch (e) {
       fail(e);
     }
   });
   $("#copy-share").addEventListener("click", () => copy($("#share-url").value));
   $("#show-share-qr").addEventListener("click", () => openQR(draft.id));
-  $("#new-upload").addEventListener("click", () => location.assign("/upload"));
+  $("#new-upload").addEventListener("click", () => location.assign(uploadPath));
   renderFiles();
   controls(false);
 }
@@ -482,7 +486,7 @@ async function transfersPage() {
   const syncEditFields = conditionalFields(form);
   async function load() {
     const request = ++generation;
-    const [transfers, config] = await Promise.all([api(`${transferBase}?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api(adminSurface ? "/admin/api/settings" : "/api/config")]);
+    const [transfers, config] = await Promise.all([api(`${transferBase}?q=${encodeURIComponent($("#search").value)}&offset=${offset}`), api(allTransfers ? "/admin/api/settings" : `${personalBase}/config`)]);
     if (request !== generation) return;
     $("#storage").textContent = `${bytes(config.storageUsed)} / ${bytes(config.storageQuota)}`;
     container.replaceChildren();
@@ -497,7 +501,7 @@ async function transfersPage() {
       }
       const meta = el("div", "transfer-meta");
       meta.append(el("span", "", `${t.files.length} file${t.files.length === 1 ? "" : "s"} \xB7 ${bytes(t.files.reduce((n, f) => n + f.size, 0))}`));
-      if (adminSurface) {
+      if (allTransfers) {
         const owner = el("span", "", "Owner: ");
         const link = el("a", "owner-link", t.ownerUsername);
         link.href = `/admin/users#user-${encodeURIComponent(t.ownerId)}`;
@@ -515,7 +519,7 @@ async function transfersPage() {
         const li = el("li");
         li.append(el("span", "", f.name), el("span", "small muted", f.deleted ? "Deleted" : `${f.downloads} downloads \xB7 ${f.uploaded ? bytes(f.size) : "Unfinished"}${f.inProgress ? " \xB7 downloading" : ""}`));
         if (f.integrityError) li.append(el("span","small danger",f.integrityError));
-        if (t.status === "draft" && !adminSurface && (f.started || f.integrityError)) li.append(action("Restart file", async () => {
+        if (t.status === "draft" && !allTransfers && (f.started || f.integrityError)) li.append(action("Restart file", async () => {
           if (!confirm(`Discard saved upload data for ${f.name}?`)) return;
           await api(`${transferBase}/${t.id}/files/${f.id}/restart`, "POST", {});
           await load();
@@ -530,9 +534,9 @@ async function transfersPage() {
         qr.setAttribute("aria-label", "QR code");
         actions.append(copyAction(t.shareUrl), qr);
       }
-      if (t.status === "draft" && !adminSurface) {
+      if (t.status === "draft" && !allTransfers) {
         const resume = el("a", "button secondary", "Resume upload");
-        resume.href = `/upload?resume=${t.id}`;
+        resume.href = `${uploadPath}?resume=${t.id}`;
         actions.append(resume);
       }
       if (t.status === "draft" || t.status === "published") actions.append(action("Edit", () => {
@@ -637,12 +641,21 @@ async function usersPage() {
     form.elements.username.readOnly = !!user;
     form.elements.password.required = !user;
     form.elements.password.placeholder = user ? "Leave blank to keep current" : "";
+    syncCurrentPassword();
     const quota = user ? user.storageQuota : defaults.defaultUserQuota;
     form.elements.quotaEnabled.checked = quota > 0;
     form.elements.quotaGiB.value = (quota || defaults.defaultUserQuota || 1073741824) / 1073741824;
     form.elements.quotaGiB.disabled = !form.elements.quotaEnabled.checked;
     dialog.showModal();
   }
+  function syncCurrentPassword() {
+    const required = !!editing?.isAdmin && !!form.elements.password.value;
+    $("#user-current-password").hidden = !required;
+    form.elements.currentPassword.disabled = !required;
+    form.elements.currentPassword.required = required;
+    if (!required) form.elements.currentPassword.value = "";
+  }
+  form.elements.password.addEventListener("input", syncCurrentPassword);
   async function load() {
     const [users, settings] = await Promise.all([api("/admin/api/users"), api("/admin/api/settings")]);
     defaults = settings;
@@ -690,8 +703,10 @@ async function usersPage() {
       if (!target) input.username = form.elements.username.value;
       const password = form.elements.password.value;
       if (!target || password) input.password = password;
+      if (target?.isAdmin && password) input.currentPassword = form.elements.currentPassword.value;
       await api(target ? `/admin/api/users/${target.id}` : "/admin/api/users", target ? "PATCH" : "POST", input);
       form.elements.password.value = "";
+      form.elements.currentPassword.value = "";
       dialog.close();
       if (target?.id === document.body.dataset.userId && password) {
         location.assign("/login");
@@ -708,7 +723,7 @@ async function usersPage() {
       button.disabled = false;
     }
   });
-  dialog.addEventListener("close", () => { form.elements.password.value = ""; });
+  dialog.addEventListener("close", () => { form.elements.password.value = ""; form.elements.currentPassword.value = ""; });
   $("#close-user").addEventListener("click", () => dialog.close());
   $("#new-user").addEventListener("click", () => { if (defaults) edit(); });
   await load();

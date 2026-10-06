@@ -42,11 +42,12 @@ func testApp(t *testing.T) *App {
 }
 
 type browser struct {
-	app     *App
-	public  bool
-	admin   bool
-	cookies map[string]*http.Cookie
-	csrf    string
+	app        *App
+	public     bool
+	admin      bool
+	remoteAddr string
+	cookies    map[string]*http.Cookie
+	csrf       string
 }
 
 func newBrowser(a *App, public bool) *browser {
@@ -54,6 +55,18 @@ func newBrowser(a *App, public bool) *browser {
 }
 
 func (b *browser) request(method, path string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
+	if b.admin {
+		switch {
+		case strings.HasPrefix(path, "/api/"):
+			path = "/admin/api/personal/" + strings.TrimPrefix(path, "/api/")
+		case strings.HasPrefix(path, "/uploads/"):
+			path = "/admin" + path
+		case path == "/upload":
+			path = "/admin/upload"
+		case path == "/transfers":
+			path = "/admin/my-transfers"
+		}
+	}
 	origin := b.app.cfg.OwnerURL
 	h := b.app.OwnerHandler()
 	if b.public {
@@ -66,6 +79,9 @@ func (b *browser) request(method, path string, body io.Reader, headers map[strin
 	}
 	r := httptest.NewRequest(method, origin+path, body)
 	r.RemoteAddr = "127.0.0.1:12345"
+	if b.remoteAddr != "" {
+		r.RemoteAddr = b.remoteAddr
+	}
 	for _, cookie := range b.cookies {
 		if strings.HasPrefix(path, cookie.Path) {
 			r.AddCookie(cookie)
@@ -121,8 +137,14 @@ func (b *browser) page(t *testing.T, path string) *httptest.ResponseRecorder {
 }
 func (b *browser) login(t *testing.T) {
 	t.Helper()
+	// Upload fixtures use an ordinary account; admin credentials are private.
+	if _, err := b.app.store.db.Exec(`INSERT INTO users(id,username,password_hash,storage_quota)
+ SELECT ?,'test-owner',password_hash,storage_quota FROM users WHERE is_admin=1
+ AND NOT EXISTS(SELECT 1 FROM users WHERE username='test-owner')`, newUserID()); err != nil {
+		t.Fatal(err)
+	}
 	b.page(t, "/login")
-	checkStatus(t, b.json("POST", "/login", map[string]string{"username": "admin", "password": "owner-password-for-validation"}), 200)
+	checkStatus(t, b.json("POST", "/login", map[string]string{"username": "test-owner", "password": "owner-password-for-validation"}), 200)
 	b.page(t, "/upload")
 }
 func checkStatus(t *testing.T, w *httptest.ResponseRecorder, want int) {
@@ -155,6 +177,9 @@ func startFile(t *testing.T, b *browser, file File) string {
 	w := b.request("POST", "/uploads/", nil, map[string]string{"Tus-Resumable": "1.0.0", "Upload-Length": strconv.FormatInt(file.Size, 10), "Upload-Metadata": "file_id " + base64.StdEncoding.EncodeToString([]byte(file.ID))})
 	checkStatus(t, w, 201)
 	want := b.app.cfg.OwnerURL + "/uploads/" + file.ID
+	if b.admin {
+		want = b.app.cfg.AdminURL + "/admin/uploads/" + file.ID
+	}
 	if w.Header().Get("Location") != want {
 		t.Fatalf("noncanonical upload location %q", w.Header().Get("Location"))
 	}
@@ -414,7 +439,7 @@ func TestUnlimitedRangeAndZIP(t *testing.T) {
 	}
 }
 
-func TestPasswordSessionsRotationAndBan(t *testing.T) {
+func TestPasswordSessionsRotationAndThrottle(t *testing.T) {
 	a := testApp(t)
 	owner := newBrowser(a, false)
 	owner.login(t)
@@ -429,7 +454,7 @@ func TestPasswordSessionsRotationAndBan(t *testing.T) {
 	checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 200)
 	checkStatus(t, owner.json("PATCH", "/api/transfers/"+transfer.ID, map[string]string{"password": "new-transfer-password"}), 200)
 	checkStatus(t, public.request("GET", downloadPath(transfer, 0), nil, nil), 401)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 3; i++ {
 		checkStatus(t, public.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": "wrong"}), 403)
 	}
 	checkStatus(t, public.json("POST", "/s/"+transfer.ShareToken+"/unlock", map[string]string{"password": "new-transfer-password"}), 429)

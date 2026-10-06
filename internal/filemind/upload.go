@@ -156,7 +156,7 @@ func (a *App) initializeUploads() error {
 	composer := handler.NewStoreComposer()
 	composer.UseCore(uploadStore{a, base})
 	memorylocker.New().UseIn(composer)
-	h, err := handler.NewHandler(handler.Config{
+	config := handler.Config{
 		// Drafts reserve validated sizes, so older drafts can finish after size limits change.
 		StoreComposer: composer, BasePath: strings.TrimRight(a.cfg.OwnerURL, "/") + "/uploads/", DisableDownload: true, DisableTermination: true, DisableConcatenation: true,
 		Cors: &handler.CorsConfig{Disable: true}, NetworkTimeout: 60 * time.Second,
@@ -176,17 +176,28 @@ func (a *App) initializeUploads() error {
 			}
 			return handler.HTTPResponse{}, handler.FileInfoChanges{ID: id, MetaData: handler.MetaData{"filename": name, "file_id": id}}, nil
 		},
-	})
+	}
+	h, err := handler.NewHandler(config)
 	if err != nil {
 		return err
 	}
 	a.uploadHandler = http.StripPrefix("/uploads/", h)
+	config.BasePath = strings.TrimRight(a.cfg.AdminURL, "/") + "/admin/uploads/"
+	admin, err := handler.NewHandler(config)
+	if err != nil {
+		return err
+	}
+	a.adminUploadHandler = http.StripPrefix("/admin/uploads/", admin)
 	return nil
 }
 
 func (a *App) upload(w http.ResponseWriter, r *http.Request) {
+	uploadHandler := a.uploadHandler
+	if adminRequest(r) {
+		uploadHandler = a.adminUploadHandler
+	}
 	if r.Method == http.MethodOptions {
-		a.uploadHandler.ServeHTTP(w, r)
+		uploadHandler.ServeHTTP(w, r)
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -196,7 +207,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer release()
-		a.uploadHandler.ServeHTTP(w, r)
+		uploadHandler.ServeHTTP(w, r)
 		return
 	}
 	id := r.PathValue("id")
@@ -249,7 +260,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.uploadHandler.ServeHTTP(w, r)
+	uploadHandler.ServeHTTP(w, r)
 }
 
 func (a *App) publish(w http.ResponseWriter, r *http.Request) {

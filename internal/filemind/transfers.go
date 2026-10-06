@@ -235,6 +235,9 @@ func (a *App) updateTransfer(ctx context.Context, user User, id string, input tr
 	if err = tx.Commit(); err != nil {
 		return t, err
 	}
+	if input.Password != nil {
+		a.transferPasswords.reset(id)
+	}
 	if err = a.purgeTransfer(ctx, id); err != nil {
 		a.logFailure("purge_transfer", err, "transfer_id", id)
 	}

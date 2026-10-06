@@ -21,21 +21,25 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "Enter a new password.")
 		return
 	}
+	user := userFromContext(r.Context())
+	source := a.ownerLimiter
+	if adminRequest(r) {
+		source = a.adminLimiter
+	}
+	valid, err := a.verifyCredential(r, source, a.accountPasswords, user.ID, user.PasswordHash, input.CurrentPassword, true)
+	if err != nil {
+		a.operationError(w, r, "change_password", err)
+		return
+	}
+	if !valid {
+		apiError(w, 403, "Current password is incorrect.")
+		return
+	}
 	select {
 	case a.hashSlots <- struct{}{}:
 		defer func() { <-a.hashSlots }()
 	default:
 		apiError(w, 429, "Password verification busy. Try again shortly.")
-		return
-	}
-	user := userFromContext(r.Context())
-	if !verifyPassword(user.PasswordHash, input.CurrentPassword) {
-		limit := a.ownerLimiter
-		if adminRequest(r) {
-			limit = a.adminLimiter
-		}
-		limit.fail(a.clientIP(r))
-		apiError(w, 403, "Current password is incorrect.")
 		return
 	}
 	hash, err := hashPassword(input.NewPassword)
@@ -64,6 +68,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 		a.operationError(w, r, "change_password", err)
 		return
 	}
+	a.accountPasswords.reset(user.ID)
 	if err = a.cancelUserUploads(context.Background(), user.ID); err != nil {
 		a.logFailure("cancel_uploads", err, "user_id", user.ID)
 	}

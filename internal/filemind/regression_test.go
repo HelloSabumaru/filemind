@@ -220,7 +220,7 @@ func TestTransferRevisionsPreserveExpiryAndSerializePublication(t *testing.T) {
 	transfer := draft(t, owner, 0, "", "abcdef")
 	path := startFile(t, owner, transfer.Files[0])
 	patchFile(t, owner, path, 0, "abcdef")
-	storedUser, err := scanUser(a.store.db.QueryRow("SELECT " + userColumns + " FROM users u WHERE username='admin'"))
+	storedUser, err := scanUser(a.store.db.QueryRow("SELECT " + userColumns + " FROM users u WHERE username='test-owner'"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +375,7 @@ func TestBootstrapAndTransferPasswordsAcceptShortAndLongPasswords(t *testing.T) 
 			}
 			t.Cleanup(restarted.Close)
 			owner := newBrowser(restarted, false)
+			owner.admin = true
 			loginAs(t, owner, "admin", password)
 			transfer := publish(t, owner, draft(t, owner, 0, password, "private"), "private")
 			public := newBrowser(restarted, true)

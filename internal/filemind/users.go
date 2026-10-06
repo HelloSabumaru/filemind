@@ -60,7 +60,11 @@ func (a *App) adminAPI(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (a *App) transferAPI(next http.HandlerFunc) http.HandlerFunc {
-	return a.ownerAPI(func(w http.ResponseWriter, r *http.Request) {
+	return a.accountTransferAPI("owner", next)
+}
+
+func (a *App) accountTransferAPI(kind string, next http.HandlerFunc) http.HandlerFunc {
+	return a.accountAPI(kind, func(w http.ResponseWriter, r *http.Request) {
 		var found int
 		id := r.PathValue("id")
 		err := a.store.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM transfers WHERE id=? AND user_id=?", id, userFromContext(r.Context()).ID).Scan(&found)
@@ -174,29 +178,48 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Password     *string `json:"password"`
-		Disabled     *bool   `json:"disabled"`
-		StorageQuota *int64  `json:"storageQuota"`
+		Password        *string `json:"password"`
+		CurrentPassword string  `json:"currentPassword"`
+		Disabled        *bool   `json:"disabled"`
+		StorageQuota    *int64  `json:"storageQuota"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	a.settingsMu.Lock()
-	defer a.settingsMu.Unlock()
 	id := r.PathValue("id")
 	if !validUserID(id) {
 		apiError(w, 404, "Account unavailable.")
 		return
 	}
-	if input.StorageQuota != nil && (*input.StorageQuota < 0 || *input.StorageQuota > a.settings().StorageQuota) {
-		apiError(w, 400, "Invalid storage quota.")
-		return
-	}
 	var hash string
+	verifiedAdmin := false
 	if input.Password != nil {
 		if !validAccountPassword(*input.Password) {
 			apiError(w, 400, "Enter a password.")
 			return
+		}
+		var isAdmin bool
+		err := a.store.db.QueryRowContext(r.Context(), "SELECT is_admin FROM users WHERE id=? AND archived=0", id).Scan(&isAdmin)
+		if errors.Is(err, sql.ErrNoRows) {
+			notFound(w)
+			return
+		}
+		if err != nil {
+			a.operationError(w, r, "edit_account", err)
+			return
+		}
+		if isAdmin {
+			actor := userFromContext(r.Context())
+			valid, err := a.verifyCredential(r, a.adminLimiter, a.accountPasswords, actor.ID, actor.PasswordHash, input.CurrentPassword, true)
+			if err != nil {
+				a.operationError(w, r, "edit_account", err)
+				return
+			}
+			if !valid {
+				apiError(w, 403, "Current password is incorrect.")
+				return
+			}
+			verifiedAdmin = true
 		}
 		select {
 		case a.hashSlots <- struct{}{}:
@@ -205,12 +228,17 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 429, "Password verification busy.")
 			return
 		}
-		var err error
 		hash, err = hashPassword(*input.Password)
 		if err != nil {
 			a.operationError(w, r, "edit_account", err)
 			return
 		}
+	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	if input.StorageQuota != nil && (*input.StorageQuota < 0 || *input.StorageQuota > a.settings().StorageQuota) {
+		apiError(w, 400, "Invalid storage quota.")
+		return
 	}
 	a.uploadMu.Lock()
 	defer a.uploadMu.Unlock()
@@ -235,6 +263,10 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if user.IsAdmin && input.Disabled != nil && *input.Disabled {
 		apiError(w, 400, "The administrator cannot be disabled.")
+		return
+	}
+	if user.IsAdmin && input.Password != nil && !verifiedAdmin {
+		apiError(w, 403, "Verify your current password to change administrator credentials.")
 		return
 	}
 	invalidate := input.Password != nil || (input.Disabled != nil && *input.Disabled != user.Disabled)
@@ -263,6 +295,9 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	if err = tx.Commit(); err != nil {
 		a.operationError(w, r, "edit_account", err)
 		return
+	}
+	if input.Password != nil {
+		a.accountPasswords.reset(id)
 	}
 	if invalidate {
 		if err = a.cancelUserUploads(context.Background(), id); err != nil {

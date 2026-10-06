@@ -18,35 +18,39 @@ import (
 )
 
 type App struct {
-	cfg            Config
-	store          *Store
-	root           *os.Root
-	lock           *os.File
-	csrfKey        []byte
-	loginDummyHash string
-	templates      *template.Template
-	logger         *slog.Logger
-	uploadHandler  http.Handler
-	limiter        *limiter
-	ownerLimiter   *limiter
-	adminLimiter   *limiter
-	hashSlots      chan struct{}
-	downloadSlots  chan struct{}
-	integritySlots chan struct{}
-	syncFile       func(*os.File) error
-	activeMu       sync.Mutex
-	active         map[string]map[string]context.CancelFunc
-	uploadMu       sync.Mutex
-	cleanupMu      sync.Mutex
-	spaceMu        sync.Mutex
-	writeReserved  int64
-	settingsMu     sync.Mutex
-	preferences    atomic.Pointer[Settings]
-	lastCleanup    atomic.Int64
-	cleanupFailed  atomic.Bool
-	healthMu       sync.Mutex
-	healthChecked  time.Time
-	healthError    error
+	cfg                Config
+	store              *Store
+	root               *os.Root
+	lock               *os.File
+	csrfKey            []byte
+	loginDummyHash     string
+	templates          *template.Template
+	logger             *slog.Logger
+	uploadHandler      http.Handler
+	adminUploadHandler http.Handler
+	limiter            *limiter
+	ownerLimiter       *limiter
+	adminLimiter       *limiter
+	accountPasswords   *passwordLimiter
+	unknownPasswords   *passwordLimiter
+	transferPasswords  *passwordLimiter
+	hashSlots          chan struct{}
+	downloadSlots      chan struct{}
+	integritySlots     chan struct{}
+	syncFile           func(*os.File) error
+	activeMu           sync.Mutex
+	active             map[string]map[string]context.CancelFunc
+	uploadMu           sync.Mutex
+	cleanupMu          sync.Mutex
+	spaceMu            sync.Mutex
+	writeReserved      int64
+	settingsMu         sync.Mutex
+	preferences        atomic.Pointer[Settings]
+	lastCleanup        atomic.Int64
+	cleanupFailed      atomic.Bool
+	healthMu           sync.Mutex
+	healthChecked      time.Time
+	healthError        error
 }
 
 func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
@@ -82,6 +86,7 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 		return nil, errors.New("data directory is already in use")
 	}
 	a := &App{cfg: cfg, lock: lock, logger: logger, hashSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, 8), integritySlots: make(chan struct{}, 2), active: make(map[string]map[string]context.CancelFunc), limiter: newLimiter(), ownerLimiter: newLimiter(), adminLimiter: newLimiter()}
+	a.accountPasswords, a.unknownPasswords, a.transferPasswords = newPasswordLimiter(), newPasswordLimiter(), newPasswordLimiter()
 	defer func() {
 		if err != nil {
 			a.Close()

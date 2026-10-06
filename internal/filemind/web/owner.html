@@ -9,16 +9,16 @@
   <link rel="stylesheet" href="/assets/style.css">
   <script defer src="/assets/app.js"></script>
 </head>
-<body data-page="{{.Page}}" data-user-id="{{.User.ID}}" data-admin-surface="{{.AdminSurface}}" data-date-format="{{.DateFormat}}">
-{{$ownerBase := ""}}{{if .AdminSurface}}{{$ownerBase = .Config.OwnerURL}}{{end}}
+<body data-page="{{.Page}}" data-user-id="{{.User.ID}}" data-admin-surface="{{.AdminSurface}}" data-all-transfers="{{.AllTransfers}}" data-date-format="{{.DateFormat}}">
+{{$uploadPath := "/upload"}}{{$transfersPath := "/transfers"}}{{if .AdminSurface}}{{$uploadPath = "/admin/upload"}}{{$transfersPath = "/admin/my-transfers"}}{{end}}
 <header class="topbar">
-  <a class="brand" data-app-link href="{{$ownerBase}}/upload"><img src="/assets/icon.svg" alt="" width="24" height="24">FileMind</a>
+  <a class="brand" data-app-link href="{{$uploadPath}}"><img src="/assets/icon.svg" alt="" width="24" height="24">FileMind</a>
   <nav aria-label="Main">
     {{if or (ne .Page "login") .AdminSurface}}
-    <a data-app-link href="{{$ownerBase}}/upload" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
-    <a data-app-link href="{{$ownerBase}}/transfers" {{if and (not .AdminSurface) (eq .Page "transfers")}}aria-current="page"{{end}}>Transfers</a>
+    <a data-app-link href="{{$uploadPath}}" {{if eq .Page "upload"}}aria-current="page"{{end}}>Upload</a>
+    <a data-app-link href="{{$transfersPath}}" {{if and (not .AllTransfers) (eq .Page "transfers")}}aria-current="page"{{end}}>Transfers</a>
     <a data-app-link href="{{if .AdminSurface}}/admin/preferences{{else}}/settings{{end}}" {{if eq .Page "preferences"}}aria-current="page"{{end}}>Settings</a>
-    {{if or .User.IsAdmin .AdminSurface}}<a data-app-link href="{{.Config.AdminURL}}/admin/users" {{if and .AdminSurface (ne .Page "preferences")}}aria-current="page"{{end}}>Admin</a>{{end}}
+    {{if or .User.IsAdmin .AdminSurface}}<a data-app-link href="/admin/users" {{if and .AdminSurface (or .AllTransfers (eq .Page "users") (eq .Page "settings") (eq .Page "login"))}}aria-current="page"{{end}}>Admin</a>{{end}}
     {{if ne .Page "login"}}
     <button type="button" id="logout" class="quiet">Sign out</button>
     {{end}}
@@ -27,7 +27,7 @@
   </nav>
 </header>
 <main>
-  {{if and .AdminSurface (ne .Page "login") (ne .Page "preferences")}}
+  {{if and .AdminSurface (or .AllTransfers (eq .Page "users") (eq .Page "settings"))}}
   <nav class="section-nav" aria-label="Admin">
     <span class="section-label">Admin</span>
     <a href="/admin/users" {{if eq .Page "users"}}aria-current="page"{{end}}>Users</a>
@@ -139,6 +139,7 @@
       <div id="user-error" role="alert" class="small danger" hidden></div>
       <label>Username<input name="username" autocomplete="off" required maxlength="100" pattern="[A-Za-z0-9_.@\-]+"></label>
       <label>Password<input name="password" type="password" autocomplete="new-password" required></label>
+      <label id="user-current-password" hidden>Current password<input name="currentPassword" type="password" autocomplete="current-password" disabled></label>
       <div>
         <label class="check"><input name="quotaEnabled" type="checkbox">Storage quota</label>
         <div class="inline-fields"><input name="quotaGiB" type="number" min="0.000001" step="any" aria-label="Storage quota in GiB"><span class="unit">GiB</span></div>
@@ -147,7 +148,7 @@
     </form>
   </dialog>
   {{else}}
-  <section class="page-heading"><h1>{{if .AdminSurface}}All transfers{{else}}Transfers{{end}}</h1></section>
+  <section class="page-heading"><h1>{{if .AllTransfers}}All transfers{{else}}Transfers{{end}}</h1></section>
   <div class="toolbar">
     <input id="search" class="search" type="search" aria-label="Search transfers" placeholder="Search" maxlength="200">
     <span id="storage" class="small muted" title="Stored and reserved space"></span>
