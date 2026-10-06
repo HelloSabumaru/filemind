@@ -61,6 +61,7 @@
       <form id="password-form">
         <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label>
         <label>New password<input name="newPassword" type="password" autocomplete="new-password" required></label>
+        {{if gt .AccountPasswordMinimum 1}}<p class="small muted">Use at least {{.AccountPasswordMinimum}} characters.</p>{{end}}
         <button type="submit">Change password</button>
       </form>
     </section>
@@ -139,6 +140,7 @@
       <div id="user-error" role="alert" class="small danger" hidden></div>
       <label>Username<input name="username" autocomplete="off" required maxlength="100" pattern="[A-Za-z0-9_.@\-]+"></label>
       <label>Password<input name="password" type="password" autocomplete="new-password" required></label>
+      {{if gt .AccountPasswordMinimum 1}}<p class="small muted">Use at least {{.AccountPasswordMinimum}} characters when setting a password.</p>{{end}}
       <label id="user-current-password" hidden>Current password<input name="currentPassword" type="password" autocomplete="current-password" disabled></label>
       <div>
         <label class="check"><input name="quotaEnabled" type="checkbox">Storage quota</label>

@@ -345,7 +345,7 @@ func TestArchiveReclaimsPayloadsUsernameAndCapacity(t *testing.T) {
 	checkStatus(t, admin.json("DELETE", "/admin/api/users/"+adminID, nil), 400)
 }
 
-func TestAccountPasswordChangesAcceptShortAndLongPasswords(t *testing.T) {
+func TestDevelopmentAccountPasswordChangesAcceptShortAndLongPasswords(t *testing.T) {
 	a := testApp(t)
 	admin := adminBrowser(t, a)
 	checkStatus(t, admin.json("POST", "/admin/api/users", map[string]string{"username": "short-password", "password": "x"}), 201)
@@ -366,7 +366,7 @@ func TestAccountPasswordChangesAcceptShortAndLongPasswords(t *testing.T) {
 	loginAs(t, newBrowser(a, false), "self-service", longPassword)
 }
 
-func TestBootstrapAndTransferPasswordsAcceptShortAndLongPasswords(t *testing.T) {
+func TestProductionTransferPasswordsAcceptShortAndLongPasswords(t *testing.T) {
 	for _, password := range []string{"x", strings.Repeat("p", 1024)} {
 		t.Run(fmt.Sprint(len(password)), func(t *testing.T) {
 			a := testApp(t)
@@ -374,9 +374,6 @@ func TestBootstrapAndTransferPasswordsAcceptShortAndLongPasswords(t *testing.T) 
 			a.Close()
 			cfg.Development = false
 			cfg.OwnerURL, cfg.PublicURL, cfg.AdminURL = "https://owner.example.test", "https://public.example.test", "https://admin.example.test"
-			if err := os.WriteFile(cfg.OwnerPasswordFile, []byte(password), 0600); err != nil {
-				t.Fatal(err)
-			}
 			restarted, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			if err != nil {
 				t.Fatal(err)
@@ -384,7 +381,7 @@ func TestBootstrapAndTransferPasswordsAcceptShortAndLongPasswords(t *testing.T) 
 			t.Cleanup(restarted.Close)
 			owner := newBrowser(restarted, false)
 			owner.admin = true
-			loginAs(t, owner, "admin", password)
+			loginAs(t, owner, "admin", "owner-password-for-validation")
 			transfer := publish(t, owner, draft(t, owner, 0, password, "private"), "private")
 			public := newBrowser(restarted, true)
 			public.page(t, "/s/"+transfer.ShareToken)

@@ -244,6 +244,7 @@ func (a *App) render(w http.ResponseWriter, name string, data any) {
 type pageData struct {
 	Page, CSRF, Error, BackURL, RequestID string
 	DateFormat                            string
+	AccountPasswordMinimum                int
 	Transfer                              Transfer
 	Locked                                bool
 	Config                                Config
@@ -285,7 +286,7 @@ func (a *App) accountPage(page, kind string) http.HandlerFunc {
 		if page == "my-transfers" || page == "all-transfers" {
 			displayPage = "transfers"
 		}
-		a.render(w, "owner", pageData{Page: displayPage, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", AdminSection: adminSection, AllTransfers: page == "all-transfers", DateFormat: preferences.DateFormat})
+		a.render(w, "owner", pageData{Page: displayPage, CSRF: a.csrfToken(w, r, scope, "/"), Config: a.cfg, User: user, AdminSurface: kind == "admin", AdminSection: adminSection, AllTransfers: page == "all-transfers", DateFormat: preferences.DateFormat, AccountPasswordMinimum: accountPasswordMinimum(a.cfg.Development)})
 	}
 }
 

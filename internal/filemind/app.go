@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -75,8 +76,8 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 	}
 	password := strings.TrimRight(string(passwordBytes), "\r\n")
 	clear(passwordBytes)
-	if password == "" {
-		return nil, errors.New("owner password is required")
+	if err := validateAccountPassword(password, cfg.Development); err != nil {
+		return nil, fmt.Errorf("administrator bootstrap password: %w", err)
 	}
 	if err = os.MkdirAll(filepath.Join(cfg.DataDir, "uploads"), 0700); err != nil {
 		return nil, storeError(err)

@@ -125,8 +125,12 @@ func (a *App) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Username = strings.TrimSpace(input.Username)
-	if !validUsername(input.Username) || !validAccountPassword(input.Password) || (input.StorageQuota != nil && *input.StorageQuota < 0) {
+	if !validUsername(input.Username) || (input.StorageQuota != nil && *input.StorageQuota < 0) {
 		apiError(w, 400, "Check the username, password and quota.")
+		return
+	}
+	if err := validateAccountPassword(input.Password, a.cfg.Development); err != nil {
+		a.operationError(w, r, "create_account", err)
 		return
 	}
 	hash, err := a.hashNewPassword(r.Context(), userFromContext(r.Context()), true, input.Password)
@@ -201,8 +205,8 @@ func (a *App) editUser(w http.ResponseWriter, r *http.Request) {
 	var hash string
 	verifiedAdmin := false
 	if input.Password != nil {
-		if !validAccountPassword(*input.Password) {
-			apiError(w, 400, "Enter a password.")
+		if err := validateAccountPassword(*input.Password, a.cfg.Development); err != nil {
+			a.operationError(w, r, "edit_account", err)
 			return
 		}
 		var isAdmin bool

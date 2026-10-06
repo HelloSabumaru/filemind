@@ -3,11 +3,31 @@ package filemind
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"time"
+	"unicode/utf8"
 )
 
-func validAccountPassword(password string) bool { return password != "" }
+const minAccountPasswordCharacters = 15
+
+func accountPasswordMinimum(development bool) int {
+	if development {
+		return 1
+	}
+	return minAccountPasswordCharacters
+}
+
+func validateAccountPassword(password string, development bool) error {
+	minimum := accountPasswordMinimum(development)
+	if utf8.RuneCountInString(password) >= minimum {
+		return nil
+	}
+	if development {
+		return invalid("Enter a password.")
+	}
+	return invalid(fmt.Sprintf("Account passwords must contain at least %d characters.", minimum))
+}
 
 func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 	var input struct {
@@ -17,8 +37,8 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	if !validAccountPassword(input.NewPassword) {
-		apiError(w, 400, "Enter a new password.")
+	if err := validateAccountPassword(input.NewPassword, a.cfg.Development); err != nil {
+		a.operationError(w, r, "change_password", err)
 		return
 	}
 	user := userFromContext(r.Context())
