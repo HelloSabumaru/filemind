@@ -16,6 +16,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /filemind ./cmd/filemin
     && mkdir /data && chown 10001:10001 /data
 
 FROM scratch
+COPY LICENSE /LICENSE
 COPY --from=build /filemind /filemind
 COPY --from=build --chown=10001:10001 /data /data
 USER 10001:10001

@@ -1,6 +1,7 @@
 {
   "name": "filemind-web",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "npm run build && node web/dev.mjs",
     "build": "node web/build.mjs",

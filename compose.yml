@@ -1,7 +1,7 @@
 services:
   filemind:
     build: .
-    image: filemind:local
+    image: ${FILEMIND_IMAGE:-filemind:local}
     restart: unless-stopped
     ports:
       - "127.0.0.1:9080:8080"

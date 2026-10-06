@@ -69,3 +69,7 @@ go vet ./...
 - **Deleting:** Delete permanently removes a transfer and its files. Failed file removals are retried automatically.
 - **Busy or slow downloads:** concurrency limits can return HTTP 429; retry later. Stalled downloads time out, and long downloads below roughly 16 KiB/s can be interrupted.
 - **Backups:** Docker stores data in the `filemind_data` volume at `/data`. Stop FileMind before copying the entire data directory, and back up `.env` separately. Run one instance per data directory. Historical database schemas are not migrated.
+
+## License
+
+FileMind is licensed under the [Apache License 2.0](LICENSE).
