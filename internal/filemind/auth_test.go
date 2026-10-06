@@ -40,9 +40,17 @@ func seedSessionOccupancy(t *testing.T, a *App, kind string, count int, transfer
 		var userID any
 		transferID := ""
 		if kind == "share" {
+			// Every fixture transfer has a separate uploader; the global pool
+			// must be full without any uploader exceeding its aggregate budget.
+			ownerID := newUserID()
+			_, err = tx.Exec(`INSERT INTO users(id,username,password_hash,is_admin)
+ SELECT ?,?,password_hash,0 FROM users WHERE is_admin=1 LIMIT 1`, ownerID, "occupancy-"+prefix+"-"+strconv.Itoa(group))
+			if err != nil {
+				t.Fatal(err)
+			}
 			transferID = randomID()
 			_, err = tx.Exec(`INSERT INTO transfers(id,user_id,title,status,created_at,touched_at,expiry_seconds,download_limit,password_hash,auth_version,share_token)
- SELECT ?,user_id,'Session capacity fixture','published',created_at,touched_at,expiry_seconds,download_limit,password_hash,auth_version,? FROM transfers WHERE id=?`, transferID, randomToken(), transfer.ID)
+ SELECT ?,?,'Session capacity fixture','published',created_at,touched_at,expiry_seconds,download_limit,password_hash,auth_version,? FROM transfers WHERE id=?`, transferID, ownerID, randomToken(), transfer.ID)
 		} else {
 			userID = newUserID()
 			_, err = tx.Exec(`INSERT INTO users(id,username,password_hash,is_admin)

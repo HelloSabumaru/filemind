@@ -87,9 +87,10 @@ func (a *App) authenticatedAccount(r *http.Request, kind string) (User, error) {
 }
 
 const (
-	maxSessionsPerKind     = 10000
-	maxSessionsPerAccount  = 32
-	maxSessionsPerTransfer = 256
+	maxSessionsPerKind        = 10000
+	maxSessionsPerAccount     = 32
+	maxSessionsPerTransfer    = 256
+	maxPublicSessionsPerOwner = 1024
 )
 
 // Successful authentication at the subject's limit retires only its oldest
@@ -104,6 +105,24 @@ func capSessionSubject(ctx context.Context, tx *sql.Tx, kind, column, subject st
 	}
 	// column is an internal constant; rowid breaks ties for same-second sign-ins.
 	_, err := tx.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions WHERE kind=? AND "+column+"=? ORDER BY expires_at,rowid LIMIT ?)", kind, subject, count-maximum+1)
+	return err
+}
+
+// Public sessions have no account user_id. Attribute them through their
+// transfers, including retained closed transfers, within the allocation transaction.
+func capPublicSessionOwner(ctx context.Context, tx *sql.Tx, ownerID string) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions
+ WHERE kind='share' AND transfer_id IN (SELECT id FROM transfers WHERE user_id=?)`, ownerID).Scan(&count); err != nil {
+		return err
+	}
+	if count < maxPublicSessionsPerOwner {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash IN
+ (SELECT token_hash FROM sessions WHERE kind='share'
+ AND transfer_id IN (SELECT id FROM transfers WHERE user_id=?)
+ ORDER BY expires_at,rowid LIMIT ?)`, ownerID, count-maxPublicSessionsPerOwner+1)
 	return err
 }
 
@@ -130,6 +149,15 @@ func (a *App) pruneSessionSubjects(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+	}
+	// Apply this after the per-transfer cap so both limits hold. Retain the
+	// newest sessions across all of each uploader's transfers.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash IN
+ (SELECT token_hash FROM (SELECT s.token_hash,ROW_NUMBER() OVER
+ (PARTITION BY t.user_id ORDER BY s.expires_at DESC,s.rowid DESC) AS position
+ FROM sessions s JOIN transfers t ON t.id=s.transfer_id WHERE s.kind='share')
+ WHERE position>?)`, maxPublicSessionsPerOwner); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -181,12 +209,13 @@ func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, 
 			return err
 		}
 	} else {
-		var active int
-		if err = tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM transfers WHERE id=? AND status='published' AND auth_version=? AND password_hash=? AND (expires_at=0 OR expires_at>?)", t.ID, t.AuthVersion, t.PasswordHash, now).Scan(&active); err != nil {
-			return err
-		}
-		if active != 1 {
+		var ownerID string
+		err = tx.QueryRowContext(r.Context(), "SELECT user_id FROM transfers WHERE id=? AND status='published' AND auth_version=? AND password_hash=? AND (expires_at=0 OR expires_at>?)", t.ID, t.AuthVersion, t.PasswordHash, now).Scan(&ownerID)
+		if errors.Is(err, sql.ErrNoRows) {
 			return conflict("Transfer changed; refresh and retry.")
+		}
+		if err != nil {
+			return err
 		}
 		if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE kind='share' AND transfer_id=? AND auth_version<>?", t.ID, t.AuthVersion); err != nil {
 			return err
@@ -202,6 +231,9 @@ func (a *App) grantSession(w http.ResponseWriter, r *http.Request, kind string, 
 			return err
 		}
 		if err = capSessionSubject(r.Context(), tx, kind, "transfer_id", t.ID, maxSessionsPerTransfer); err != nil {
+			return err
+		}
+		if err = capPublicSessionOwner(r.Context(), tx, ownerID); err != nil {
 			return err
 		}
 	}

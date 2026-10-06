@@ -622,6 +622,42 @@ test("main admin navigation reuses its session and respects private-only deploym
   await owner.waitForURL(`${ownerURL}/upload`); await readyUpload(owner);
 });
 
+test("private admin upload URLs survive refresh during drafts and after publication", async t => {
+  const page = await login(t,true);
+  await page.getByRole("navigation",{name:"Main",exact:true}).getByRole("link",{name:"Upload",exact:true}).click();
+  await readyUpload(page);
+  const payload = Buffer.alloc(128*1024+13,"r");
+  const name = "private-admin-refresh.txt";
+  // Interrupt upload creation after the form creates its draft so refresh
+  // exercises the URL rewrite rather than an API-created resume fixture.
+  const interruptedUpload = route => route.abort("failed");
+  await page.route("**/admin/uploads/",interruptedUpload);
+  await select(page,name,payload);
+  await page.getByRole("button",{name:"Upload",exact:true}).click();
+  await page.waitForURL(url => url.searchParams.has("resume"));
+  await page.locator("#pause-upload").click();
+  const draftURL = new URL(page.url());
+  assert.equal(draftURL.pathname,"/admin/upload");
+  const draftID = draftURL.searchParams.get("resume");
+  assert.ok(draftID);
+  assert.equal((await page.reload()).status(),200);
+  await readyUpload(page);
+  assert.equal(new URL(page.url()).searchParams.get("resume"),draftID);
+  await page.locator("#selected-files").getByText(name,{exact:true}).waitFor();
+  await page.unroute("**/admin/uploads/",interruptedUpload);
+  await select(page,name,payload);
+  await page.locator("#resume-draft").click();
+  const share = await publishedResult(page);
+  assert.equal(page.url(),`${adminURL}/admin/upload`);
+  assert.equal((await page.reload()).status(),200);
+  await readyUpload(page);
+  const stored = (await api(page,`/admin/api/personal/transfers/${draftID}`)).body;
+  assert.equal(stored.status,"published");
+  const response = await fetch(`${share}/files/${stored.files[0].id}`);
+  assert.equal(response.status,200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()),payload);
+});
+
 test("private-only mode supports private admin upload resume and blocks main admin sign-in", async t => {
   await restartWithAdminSignInPolicy(true);
   try {

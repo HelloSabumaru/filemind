@@ -351,7 +351,7 @@ async function uploadPage() {
         }
         draft = await api(transferBase, "POST", { title: form.elements.title.value, password: form.elements.password.value, expirySeconds: expiry, downloadLimit: limit, files });
         form.elements.password.value = "";
-        history.replaceState(null, "", `/upload?resume=${draft.id}`);
+        history.replaceState(null, "", `${uploadPath}?resume=${draft.id}`);
       } else {
         draft = await api(`${transferBase}/${draft.id}`);
       }
@@ -422,7 +422,7 @@ async function uploadPage() {
       form.hidden = true;
       drop.hidden = true;
       $("#selected-files").hidden = true;
-      history.replaceState(null, "", "/upload");
+      history.replaceState(null, "", uploadPath);
       $("#upload-heading").textContent = "Share";
       hideNotice();
     } catch (e) {

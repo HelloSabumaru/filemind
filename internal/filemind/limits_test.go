@@ -272,7 +272,8 @@ func TestGlobalDownloadRejectionReleasesOverflowReservation(t *testing.T) {
 	request := httptest.NewRequest("GET", a.cfg.PublicURL+"/", nil)
 	request.RemoteAddr = "192.0.2.105:1000"
 	response := httptest.NewRecorder()
-	if _, allowed := a.downloadCapacity(response, request); allowed || response.Code != 429 {
+	transfer := Transfer{ID: "capacity-transfer", UserID: "capacity-owner"}
+	if _, allowed := a.downloadCapacity(response, request, transfer); allowed || response.Code != 429 {
 		t.Fatal("full global download capacity accepted another reservation")
 	}
 	ip := a.clientIP(request)
@@ -281,7 +282,7 @@ func TestGlobalDownloadRejectionReleasesOverflowReservation(t *testing.T) {
 		t.Fatal("global rejection leaked an overflow download reservation")
 	}
 	<-a.downloadSlots
-	release, allowed := a.downloadCapacity(httptest.NewRecorder(), request)
+	release, allowed := a.downloadCapacity(httptest.NewRecorder(), request, transfer)
 	if !allowed {
 		t.Fatal("overflow could not use newly available global download capacity")
 	}

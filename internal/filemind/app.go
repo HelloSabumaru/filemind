@@ -42,6 +42,9 @@ type App struct {
 	hashUsers          *userWorkLimit
 	integrityUsers     *userWorkLimit
 	uploadUsers        *userWorkLimit
+	downloadTransfers  *userWorkLimit
+	downloadUsers      *userWorkLimit
+	downloadPolicy     downloadStreamPolicy
 	uploadLocker       handler.Locker
 	downloadSlots      chan struct{}
 	integritySlots     chan struct{}
@@ -93,9 +96,11 @@ func New(cfg Config, logger *slog.Logger) (_ *App, err error) {
 		lock.Close()
 		return nil, errors.New("data directory is already in use")
 	}
-	a := &App{cfg: cfg, lock: lock, logger: logger, hashSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, 8), integritySlots: make(chan struct{}, 2), active: make(map[string]map[string]context.CancelFunc), limiter: newLimiter(), ownerLimiter: newLimiter(), adminLimiter: newLimiter()}
+	a := &App{cfg: cfg, lock: lock, logger: logger, hashSlots: make(chan struct{}, 2), downloadSlots: make(chan struct{}, maxConcurrentDownloads), integritySlots: make(chan struct{}, 2), active: make(map[string]map[string]context.CancelFunc), limiter: newLimiter(), ownerLimiter: newLimiter(), adminLimiter: newLimiter()}
 	a.adminHashSlots = make(chan struct{}, 1)
 	a.hashUsers, a.integrityUsers, a.uploadUsers = newUserWorkLimit(1), newUserWorkLimit(1), newUserWorkLimit(2)
+	a.downloadTransfers, a.downloadUsers = newUserWorkLimit(maxDownloadsPerTransfer), newUserWorkLimit(maxDownloadsPerOwner)
+	a.downloadPolicy = defaultDownloadStreamPolicy()
 	a.accountPasswords, a.unknownPasswords, a.transferPasswords = newPasswordLimiter(), newPasswordLimiter(), newPasswordLimiter()
 	defer func() {
 		if err != nil {

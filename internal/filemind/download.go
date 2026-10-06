@@ -12,7 +12,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+const (
+	maxConcurrentDownloads  = 8
+	maxDownloadsPerTransfer = 2
+	maxDownloadsPerOwner    = 4
 )
 
 func (a *App) authorizedTransfer(w http.ResponseWriter, r *http.Request) (Transfer, bool) {
@@ -27,31 +34,111 @@ func (a *App) authorizedTransfer(w http.ResponseWriter, r *http.Request) (Transf
 	}
 	return t, true
 }
-func (a *App) downloadCapacity(w http.ResponseWriter, r *http.Request) (func(), bool) {
+func (a *App) downloadCapacity(w http.ResponseWriter, r *http.Request, t Transfer) (func(), bool) {
+	reject := func(message string) (func(), bool) {
+		w.Header().Set("Retry-After", "10")
+		a.downloadError(w, r, http.StatusTooManyRequests, message)
+		return nil, false
+	}
+	// Files, ranges and ZIPs share these budgets. Rejections never queue or
+	// retain entries; every partial acquisition is released before responding.
+	releaseTransfer, err := a.downloadTransfers.acquire(t.ID)
+	if err != nil {
+		return reject("This transfer is already serving simultaneous downloads. Try again shortly.")
+	}
+	releaseOwner, err := a.downloadUsers.acquire(t.UserID)
+	if err != nil {
+		releaseTransfer()
+		return reject("This sender is already serving simultaneous downloads. Try again shortly.")
+	}
 	ip := a.clientIP(r)
 	release, allowed := a.limiter.download(ip)
 	if !allowed {
-		w.Header().Set("Retry-After", "10")
-		a.downloadError(w, r, 429, "Too many simultaneous downloads.")
-		return nil, false
+		releaseOwner()
+		releaseTransfer()
+		return reject("Too many simultaneous downloads.")
 	}
 	select {
 	case a.downloadSlots <- struct{}{}:
-		return func() { <-a.downloadSlots; release() }, true
+		return sync.OnceFunc(func() {
+			<-a.downloadSlots
+			release()
+			releaseOwner()
+			releaseTransfer()
+		}), true
 	default:
 		release()
-		w.Header().Set("Retry-After", "10")
-		a.downloadError(w, r, 429, "Downloads busy. Try again shortly.")
-		return nil, false
+		releaseOwner()
+		releaseTransfer()
+		return reject("Downloads busy. Try again shortly.")
 	}
 }
 
+type downloadStreamPolicy struct {
+	idleTimeout, progressWindow time.Duration
+	minimumWindowBytes          int64
+}
+
+func defaultDownloadStreamPolicy() downloadStreamPolicy {
+	return downloadStreamPolicy{idleTimeout: 30 * time.Second, progressWindow: time.Minute, minimumWindowBytes: 16 * 1024 * 60}
+}
+
 type streamWriter struct {
-	writer http.ResponseWriter
-	ctx    context.Context
-	bytes  int64
-	status int
-	err    error
+	writer           http.ResponseWriter
+	ctx              context.Context
+	bytes            int64
+	status           int
+	err              error
+	policy           downloadStreamPolicy
+	now              func() time.Time
+	progressDeadline time.Time
+	progressBytes    int64
+}
+
+func newStreamWriter(w http.ResponseWriter, ctx context.Context, policy downloadStreamPolicy) *streamWriter {
+	return &streamWriter{writer: w, ctx: ctx, policy: policy, now: time.Now, progressDeadline: time.Now().Add(policy.progressWindow)}
+}
+
+// A short successful write cannot postpone the progress deadline. Only a full
+// window's byte budget renews it; each individual write/flush also has an idle
+// deadline. The transfer/request deadline remains an upper bound on both.
+func (w *streamWriter) prepare() error {
+	if w.err != nil {
+		return w.err
+	}
+	if err := w.ctx.Err(); err != nil {
+		w.err = err
+		return err
+	}
+	now := w.now()
+	if !now.Before(w.progressDeadline) {
+		w.err = context.DeadlineExceeded
+		return w.err
+	}
+	deadline := minDeadline(now.Add(w.policy.idleTimeout), w.progressDeadline)
+	if end, ok := w.ctx.Deadline(); ok {
+		deadline = minDeadline(deadline, end)
+	}
+	controller := http.NewResponseController(w.writer)
+	if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		w.err = err
+		return err
+	}
+	// Cancellation can race setting a future deadline after streamContext's
+	// callback has interrupted the transport. Never overwrite that interruption.
+	if err := w.ctx.Err(); err != nil {
+		controller.SetWriteDeadline(now)
+		w.err = err
+		return err
+	}
+	return nil
+}
+
+func minDeadline(first, second time.Time) time.Time {
+	if second.Before(first) {
+		return second
+	}
+	return first
 }
 
 func (w *streamWriter) WriteHeader(status int) {
@@ -62,20 +149,37 @@ func (w *streamWriter) WriteHeader(status int) {
 }
 func (w *streamWriter) Header() http.Header { return w.writer.Header() }
 func (w *streamWriter) Write(data []byte) (int, error) {
-	if err := w.ctx.Err(); err != nil {
-		w.err = err
+	if err := w.prepare(); err != nil {
 		return 0, err
 	}
-	http.NewResponseController(w.writer).SetWriteDeadline(time.Now().Add(time.Minute))
 	if w.status == 0 {
 		w.status = 200
 	}
 	n, err := w.writer.Write(data)
-	if err != nil {
-		w.err = err
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
 	}
 	w.bytes += int64(n)
+	w.progressBytes += int64(n)
+	if err == nil {
+		now := w.now()
+		if !now.Before(w.progressDeadline) {
+			err = context.DeadlineExceeded
+		} else if w.progressBytes >= w.policy.minimumWindowBytes {
+			w.progressDeadline = now.Add(w.policy.progressWindow)
+			w.progressBytes = 0
+		}
+	}
+	w.err = err
 	return n, err
+}
+
+func (w *streamWriter) flush() error {
+	if err := w.prepare(); err != nil {
+		return err
+	}
+	w.err = http.NewResponseController(w.writer).Flush()
+	return w.err
 }
 func (w *streamWriter) Unwrap() http.ResponseWriter { return w.writer }
 
@@ -153,7 +257,7 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	release, ok := a.downloadCapacity(w, r)
+	release, ok := a.downloadCapacity(w, r, t)
 	if !ok {
 		return
 	}
@@ -175,10 +279,10 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 	if t.DownloadLimit > 0 {
 		w.Header().Set("Accept-Ranges", "none")
 		w.Header().Set("Content-Length", strconv.FormatInt(selected.Size, 10))
-		writer := &streamWriter{writer: w, ctx: ctx}
+		writer := newStreamWriter(w, ctx, a.downloadPolicy)
 		n, err := io.CopyBuffer(writer, payload, make([]byte, 64*1024))
 		if err == nil {
-			err = http.NewResponseController(w).Flush()
+			err = writer.flush()
 		}
 		success := err == nil && ctx.Err() == nil && n == selected.Size
 		payload.Close()
@@ -188,9 +292,9 @@ func (a *App) download(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writer := &streamWriter{writer: w, ctx: ctx}
+	writer := newStreamWriter(w, ctx, a.downloadPolicy)
 	http.ServeContent(writer, r, selected.Name, stat.ModTime(), payload)
-	flushErr := http.NewResponseController(w).Flush()
+	flushErr := writer.flush()
 	success := writer.status == 200 && writer.bytes == selected.Size && ctx.Err() == nil && flushErr == nil
 	payload.Close()
 	a.complete(lease, success)
@@ -220,7 +324,7 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	release, ok := a.downloadCapacity(w, r)
+	release, ok := a.downloadCapacity(w, r, t)
 	if !ok {
 		return
 	}
@@ -238,7 +342,7 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 		a.downloadError(w, r, 404, "Transfer unavailable.")
 		return
 	}
-	writer := &streamWriter{writer: w, ctx: ctx}
+	writer := newStreamWriter(w, ctx, a.downloadPolicy)
 	archive := zip.NewWriter(writer)
 	names := map[string]bool{}
 	for _, f := range selected {
@@ -283,7 +387,7 @@ func (a *App) archive(w http.ResponseWriter, r *http.Request) {
 		err = archive.Close()
 	}
 	if err == nil {
-		err = http.NewResponseController(w).Flush()
+		err = writer.flush()
 	}
 	a.complete(lease, err == nil && ctx.Err() == nil)
 	if err != nil || ctx.Err() != nil {
