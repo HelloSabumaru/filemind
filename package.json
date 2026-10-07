@@ -5,8 +5,10 @@
   "scripts": {
     "dev": "npm run build && node web/dev.mjs",
     "build": "node web/build.mjs",
+    "build:demo": "node web/demo/build.mjs",
+    "test:demo": "npm run build:demo && node --test web/demo/demo.test.mjs",
     "test:web": "npm run build && node --test web/app.test.mjs",
-    "check": "node --check web/app.js && node --check web/hash-worker.js && node --check web/build.mjs && node --check web/dev.mjs"
+    "check": "node --check web/app.js && node --check web/hash-worker.js && node --check web/build.mjs && node --check web/dev.mjs && node --check web/demo/demo.js && node --check web/demo/downloads.js && node --check web/demo/build.mjs && node --check web/demo/demo.test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

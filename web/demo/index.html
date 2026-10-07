@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Try FileMind's uploads, transfers and administration in an interactive demo.">
+  <title>FileMind · Interactive demo</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./demo.css">
+  <script type="module" src="./demo.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#upload"><img src="./icon.svg" alt="" width="24" height="24">FileMind <span class="badge">Demo</span></a>
+    <nav aria-label="Main">
+      <a href="#upload" data-page="upload">Upload</a>
+      <a href="#transfers" data-page="transfers">Transfers</a>
+      <a href="#settings" data-page="settings">Settings</a>
+      <a href="#users" data-page="admin">Admin</a>
+      <button id="theme-toggle" type="button" class="icon-button quiet" aria-label="Switch theme"></button>
+    </nav>
+  </header>
+  <div class="demo-banner">
+    <p><strong>Interactive demo.</strong> Uploads are simulated. Your files stay on your device.</p>
+    <div class="demo-links"><a href="https://github.com/HelloSabumaru/filemind">GitHub</a><button id="reset-demo" class="quiet" type="button">Reset demo</button></div>
+  </div>
+  <main id="view"></main>
+  <dialog id="modal" aria-labelledby="modal-title"></dialog>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <noscript><main><p>This interactive demo needs JavaScript. <a href="https://github.com/HelloSabumaru/filemind">View FileMind on GitHub</a>.</p></main></noscript>
+</body>
+</html>

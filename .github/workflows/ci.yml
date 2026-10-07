@@ -20,6 +20,7 @@ jobs:
       - run: npm ci && npm run check && npm run build && npm audit --audit-level=high
       - run: npx playwright install --with-deps chromium
       - run: npm run test:web
+      - run: npm run test:demo
       - run: test -z "$(gofmt -l cmd internal)"
       - run: go test -race ./... && go vet ./...
       - run: CGO_ENABLED=0 go build -trimpath -o /tmp/filemind ./cmd/filemind

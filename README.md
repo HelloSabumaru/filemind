@@ -4,6 +4,8 @@ FileMind is a self hosted file sharing app. Upload files, share a link, and let 
 
 Administrators manage users and storage limits. There is no public registration, and each user manages their own transfers.
 
+[Try the interactive demo](https://hellosabumaru.github.io/filemind/). Uploads are simulated; downloads contain sample content.
+
 ## Run with Docker Compose
 
 You need Docker Compose and a reverse proxy that provides HTTPS. From the repository directory:

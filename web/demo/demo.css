@@ -1,0 +1,18 @@
+.demo-banner { max-width: 960px; margin: auto; padding: .6rem 1.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--border); color: var(--muted); font-size: .8rem; }
+.demo-banner p { margin: 0; }
+.demo-links { display: flex; align-items: center; gap: .5rem; flex-shrink: 0; }
+.demo-links a, .demo-help a { color: inherit; text-underline-offset: 3px; }
+.demo-links button { font-size: .8rem; min-height: 32px; padding: .3rem .5rem; }
+.demo-help { font-size: .8rem; color: var(--muted); margin: .75rem 0 0; }
+.demo-sample { margin-top: .75rem; }
+.file-description { flex: 1; }
+.demo-share { display: grid; gap: 1rem; }
+.demo-share p { margin: 0; }
+.demo-share .actions { margin-top: 0; }
+.personal-settings .panel { display: grid; gap: 1rem; }
+.personal-settings .actions { margin: 0; }
+.topbar .brand .badge { font-weight: 400; }
+@media (max-width: 640px) {
+  .demo-banner { padding: .6rem 1rem; align-items: flex-start; flex-direction: column; gap: .25rem; }
+  .demo-links { width: 100%; justify-content: space-between; }
+}
